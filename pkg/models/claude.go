@@ -66,7 +66,7 @@ func (m *ClaudeModel) StreamResponse(ctx context.Context, messages []Message, on
 }
 
 func (m *ClaudeModel) GetName() string {
-	return "claude"
+	return fmt.Sprintf("claude-%s", m.config.ModelName)
 }
 
 func (m *ClaudeModel) GetMaxTokens() int {

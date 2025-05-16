@@ -129,7 +129,7 @@ func (m *OllamaModel) StreamResponse(ctx context.Context, messages []Message, on
 }
 
 func (m *OllamaModel) GetName() string {
-	return "ollama"
+	return fmt.Sprintf("ollama-%s", m.config.ModelName)
 }
 
 func (m *OllamaModel) GetMaxTokens() int {

@@ -17,6 +17,7 @@ A modular, extensible chat agent that interfaces with various LLM providers (Cla
 - 🔄 Graceful shutdown handling
 - 🎨 Colored terminal output
 - ⚡ Streaming responses for real-time output
+- Export to JSON for processing elsewhere like [Datasette](https://datasette.io/)
 
 ## Prerequisites
 
