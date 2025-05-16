@@ -142,22 +142,24 @@ Examples:
 ## Project Structure
 
 ```text
-.
 ├── cmd
-│   └── agent
-│       └── main.go
+│   └── agent
+│       └── main.go
 ├── go.mod
+├── go.sum
 ├── LICENSE
 ├── pkg
-│   ├── agent
-│   │   └── agent.go
-│   ├── config
-│   ├── models
-│   │   ├── claude.go
-│   │   ├── model.go
-│   │   └── ollama.go
-│   └── tools
-│       ├── file_tools.go
-│       └── tool.go
+│   ├── agent
+│   │   └── agent.go
+│   ├── models
+│   │   ├── chatgpt.go
+│   │   ├── claude.go
+│   │   ├── model.go
+│   │   └── ollama.go
+│   ├── storage
+│   │   └── chat.go
+│   └── tools
+│       ├── file_tools.go
+│       └── tool.go
 └── README.md
 ```
