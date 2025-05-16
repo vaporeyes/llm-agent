@@ -9,9 +9,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/vaporeyes/llm-agent/pkg/agent"
-	"github.com/vaporeyes/llm-agent/pkg/models"
-	"github.com/vaporeyes/llm-agent/pkg/tools"
+	"llm-agent/pkg/agent"
+	"llm-agent/pkg/models"
+	"llm-agent/pkg/tools"
 )
 
 func main() {

@@ -1,4 +1,4 @@
-module github.com/jsh/dev/projects/llm-agent
+module llm-agent
 
 go 1.21
 

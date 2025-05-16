@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jsh/dev/projects/llm-agent/pkg/models"
-	"github.com/jsh/dev/projects/llm-agent/pkg/tools"
+	"llm-agent/pkg/models"
+	"llm-agent/pkg/tools"
 )
 
 // Statistics tracks usage statistics for the agent
