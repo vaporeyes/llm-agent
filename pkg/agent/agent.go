@@ -7,7 +7,10 @@ import (
 	"time"
 
 	"llm-agent/pkg/models"
+	"llm-agent/pkg/storage"
 	"llm-agent/pkg/tools"
+
+	"github.com/google/uuid"
 )
 
 // Statistics tracks usage statistics for the agent
@@ -25,10 +28,16 @@ type Agent struct {
 	tools        []tools.Tool
 	showStats    bool
 	stats        Statistics
+	storage      *storage.ChatStorage
 }
 
 // NewAgent creates a new agent with the given model and tools
-func NewAgent(model models.Model, getUserInput func() (string, bool), tools []tools.Tool, showStats bool) *Agent {
+func NewAgent(model models.Model, getUserInput func() (string, bool), tools []tools.Tool, showStats bool, storagePath string) (*Agent, error) {
+	chatStorage, err := storage.NewChatStorage(storagePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize chat storage: %w", err)
+	}
+
 	return &Agent{
 		model:        model,
 		getUserInput: getUserInput,
@@ -37,7 +46,8 @@ func NewAgent(model models.Model, getUserInput func() (string, bool), tools []to
 		stats: Statistics{
 			StartTime: time.Now(),
 		},
-	}
+		storage: chatStorage,
+	}, nil
 }
 
 // Run starts the agent's main loop
@@ -56,11 +66,22 @@ func (a *Agent) Run(ctx context.Context) error {
 			continue
 		}
 
+		// Generate a new conversation ID for this exchange
+		conversationID := uuid.New().String()
+
 		// Add user message to history
-		messages = append(messages, models.Message{
+		userMsg := models.Message{
 			Role:    "user",
 			Content: input,
-		})
+		}
+		messages = append(messages, userMsg)
+
+		// Save user message
+		if err := a.storage.SaveMessage(userMsg, a.model.GetName(), models.Usage{
+			InputTokens: int64(len(strings.Fields(input))),
+		}, conversationID); err != nil {
+			fmt.Printf("Warning: failed to save user message: %v\n", err)
+		}
 
 		// Get model response
 		startTime := time.Now()
@@ -93,10 +114,18 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 
 		// Add assistant response to history
-		messages = append(messages, models.Message{
+		assistantMsg := models.Message{
 			Role:    "assistant",
 			Content: fullResponse,
-		})
+		}
+		messages = append(messages, assistantMsg)
+
+		// Save assistant message with the same conversation ID
+		if err := a.storage.SaveMessage(assistantMsg, a.model.GetName(), models.Usage{
+			OutputTokens: int64(len(strings.Fields(fullResponse))),
+		}, conversationID); err != nil {
+			fmt.Printf("Warning: failed to save assistant message: %v\n", err)
+		}
 	}
 }
 

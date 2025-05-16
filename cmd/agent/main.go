@@ -18,6 +18,7 @@ func main() {
 	showStats := flag.Bool("stats", false, "Show statistics when the program exits")
 	modelType := flag.String("model", "claude", "Model to use (claude, ollama)")
 	ollamaModel := flag.String("ollama-model", "llama2", "Model to use with Ollama (e.g., llama2, mistral)")
+	storagePath := flag.String("storage", "chat_history.json", "Path to store chat history")
 	flag.Parse()
 
 	// Initialize model
@@ -70,7 +71,11 @@ func main() {
 	}
 
 	// Create and run agent
-	agent := agent.NewAgent(model, getUserInput, availableTools, *showStats)
+	agent, err := agent.NewAgent(model, getUserInput, availableTools, *showStats, *storagePath)
+	if err != nil {
+		fmt.Printf("Error creating agent: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)

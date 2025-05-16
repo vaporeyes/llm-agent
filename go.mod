@@ -4,6 +4,7 @@ go 1.21
 
 require (
 	github.com/anthropics/anthropic-sdk-go v0.2.0-beta.3
+	github.com/google/uuid v1.6.0
 	github.com/invopop/jsonschema v0.13.0
 )
 
