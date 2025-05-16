@@ -29,7 +29,7 @@ A modular, extensible chat agent that interfaces with various LLM providers (Cla
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/llm-agent.git
+git clone https://github.com/vaporeyes/llm-agent.git
 cd llm-agent
 ```
 
@@ -98,4 +98,23 @@ Examples:
 
 ## Project Structure
 
+```text
+.
+├── cmd
+│   └── agent
+│       └── main.go
+├── go.mod
+├── LICENSE
+├── pkg
+│   ├── agent
+│   │   └── agent.go
+│   ├── config
+│   ├── models
+│   │   ├── claude.go
+│   │   ├── model.go
+│   │   └── ollama.go
+│   └── tools
+│       ├── file_tools.go
+│       └── tool.go
+└── README.md
 ```
