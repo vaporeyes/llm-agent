@@ -56,6 +56,15 @@ func (m *ClaudeModel) GenerateResponse(ctx context.Context, messages []Message) 
 	}, nil
 }
 
+func (m *ClaudeModel) StreamResponse(ctx context.Context, messages []Message, onChunk func(chunk string) error) error {
+	// For now, use non-streaming and call onChunk once with full response
+	response, err := m.GenerateResponse(ctx, messages)
+	if err != nil {
+		return err
+	}
+	return onChunk(response.Content)
+}
+
 func (m *ClaudeModel) GetName() string {
 	return "claude"
 }
