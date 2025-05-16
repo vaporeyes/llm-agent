@@ -16,8 +16,10 @@ import (
 
 func main() {
 	showStats := flag.Bool("stats", false, "Show statistics when the program exits")
-	modelType := flag.String("model", "claude", "Model to use (claude, ollama)")
+	modelType := flag.String("model", "claude", "Model to use (claude, chatgpt, ollama)")
 	ollamaModel := flag.String("ollama-model", "llama2", "Model to use with Ollama (e.g., llama2, mistral)")
+	claudeModel := flag.String("claude-model", "claude-3-sonnet-20240229", "Model to use with Claude (e.g., claude-3-sonnet-20240229, claude-3-opus-20240229)")
+	chatgptModel := flag.String("chatgpt-model", "gpt-3.5-turbo", "Model to use with ChatGPT (e.g., gpt-3.5-turbo, gpt-4)")
 	storagePath := flag.String("storage", "chat_history.json", "Path to store chat history")
 	flag.Parse()
 
@@ -34,7 +36,20 @@ func main() {
 		}
 		model, err = models.NewClaudeModel(models.ModelConfig{
 			APIKey:      os.Getenv("ANTHROPIC_API_KEY"),
-			ModelName:   "claude-3-sonnet-20240229",
+			ModelName:   *claudeModel,
+			MaxTokens:   1024,
+			Temperature: 0.7,
+		})
+	case "chatgpt":
+		if os.Getenv("OPENAI_API_KEY") == "" {
+			fmt.Println("Error: OPENAI_API_KEY environment variable is not set")
+			fmt.Println("Please set your API key using:")
+			fmt.Println("  export OPENAI_API_KEY=your-api-key")
+			os.Exit(1)
+		}
+		model, err = models.NewChatGPTModel(models.ModelConfig{
+			APIKey:      os.Getenv("OPENAI_API_KEY"),
+			ModelName:   *chatgptModel,
 			MaxTokens:   1024,
 			Temperature: 0.7,
 		})
