@@ -34,10 +34,13 @@ git clone https://github.com/vaporeyes/llm-agent.git
 cd llm-agent
 ```
 
-2. Set up your API key (if using Claude):
+2. Set up your API keys (if not using local models):
 
 ```bash
+# claude
 export ANTHROPIC_API_KEY=your-api-key
+# chatgpt
+export OPENAI_API_KEY=your-api-key
 ```
 
 3. Install Ollama (if using local models):
