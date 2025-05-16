@@ -95,9 +95,10 @@ Examples:
 ./llm-agent -stats -model claude
 
 # Use ChatGPT with streaming responses with the default model with no stats
-./llm-agent -model chatgpt -chatgpt-model gpt-4
+./llm-agent -model chatgpt -chatgpt-model
 
-# Use ChatGPT with 
+# Use ChatGPT with a specific model
+./llm-agent -model chatgpt -chatgpt-model gpt-4
 
 # Use Ollama with llama2 and streaming responses
 ./llm-agent -stats -model ollama -ollama-model llama2
