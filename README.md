@@ -8,6 +8,7 @@ A modular, extensible chat agent that interfaces with various LLM providers (Cla
 
 - 🤖 Multiple LLM model support:
   - Claude (via API)
+  - ChatGPT (via API)
   - Ollama (local models like llama2, mistral)
 - 🛠️ Built-in tools for file operations:
   - Read file contents
