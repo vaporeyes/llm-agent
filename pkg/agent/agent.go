@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -10,7 +11,16 @@ import (
 	"llm-agent/pkg/storage"
 	"llm-agent/pkg/tools"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/google/uuid"
+)
+
+// ANSI color codes
+const (
+	colorReset  = "\033[0m"
+	colorBlue   = "\033[94m" // Light blue
+	colorGreen  = "\033[92m" // Light green
+	colorYellow = "\033[93m" // Light yellow for tool usage
 )
 
 // Statistics tracks usage statistics for the agent
@@ -38,6 +48,38 @@ func NewAgent(model models.Model, getUserInput func() (string, bool), tools []to
 		return nil, fmt.Errorf("failed to initialize chat storage: %w", err)
 	}
 
+	// Convert our tools to Claude's tool format
+	claudeTools := make([]anthropic.ToolUnionParam, len(tools))
+	for i, tool := range tools {
+		// Parse the input schema
+		var schema map[string]interface{}
+		if err := json.Unmarshal(tool.GetInputSchema(), &schema); err != nil {
+			return nil, fmt.Errorf("failed to parse tool schema: %w", err)
+		}
+
+		// Create the tool input schema
+		inputSchema := anthropic.ToolInputSchemaParam{
+			Type:        "object",
+			Properties:  schema["properties"],
+			ExtraFields: make(map[string]interface{}),
+		}
+
+		// Add required fields if present
+		if required, ok := schema["required"].([]interface{}); ok {
+			inputSchema.ExtraFields["required"] = required
+		}
+
+		claudeTools[i] = anthropic.ToolUnionParamOfTool(
+			inputSchema,
+			tool.GetName(),
+		)
+	}
+
+	// Set tools for Claude model
+	if claudeModel, ok := model.(*models.ClaudeModel); ok {
+		claudeModel.SetTools(claudeTools)
+	}
+
 	return &Agent{
 		model:        model,
 		getUserInput: getUserInput,
@@ -54,9 +96,25 @@ func NewAgent(model models.Model, getUserInput func() (string, bool), tools []to
 func (a *Agent) Run(ctx context.Context) error {
 	var messages []models.Message
 
+	// Add system message to describe available tools
+	toolDescriptions := make([]string, len(a.tools))
+	for i, tool := range a.tools {
+		toolDescriptions[i] = fmt.Sprintf("- %s: %s", tool.GetName(), tool.GetDescription())
+	}
+	systemMessage := fmt.Sprintf(`You are a helpful AI assistant with access to the following tools:
+
+%s
+
+When a user asks you to perform a task that can be done using these tools, you should use them. Always explain what you're doing and show the results of each tool usage.`, strings.Join(toolDescriptions, "\n"))
+
+	messages = append(messages, models.Message{
+		Role:    "system",
+		Content: systemMessage,
+	})
+
 	for {
 		// Get user input
-		fmt.Print("\nYou: ")
+		fmt.Printf("%sYou: %s", colorBlue, colorReset)
 		input, ok := a.getUserInput()
 		if !ok {
 			return nil
@@ -85,17 +143,76 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		// Get model response
 		startTime := time.Now()
-		fmt.Print("\nAssistant: ")
+		fmt.Printf("%sAssistant: %s", colorGreen, colorReset)
 
 		// Stream the response
 		var fullResponse string
 		err := a.model.StreamResponse(ctx, messages, func(chunk string) error {
-			fmt.Print(chunk)
+			// Color tool usage in yellow
+			if strings.Contains(chunk, "[Tool:") {
+				fmt.Printf("%s%s%s", colorYellow, chunk, colorReset)
+			} else {
+				fmt.Print(chunk)
+			}
 			fullResponse += chunk
 			return nil
 		})
 		if err != nil {
 			return fmt.Errorf("error getting model response: %w", err)
+		}
+
+		// Check if the response contains tool usage
+		if strings.Contains(fullResponse, "[Tool:") {
+			// Extract tool name and input
+			lines := strings.Split(fullResponse, "\n")
+			var toolName string
+			var toolInput string
+			for i, line := range lines {
+				if strings.HasPrefix(line, "[Tool:") {
+					toolName = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(line, "]"), "[Tool:"))
+					if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "Input:") {
+						toolInput = strings.TrimSpace(strings.TrimPrefix(lines[i+1], "Input:"))
+					}
+					break
+				}
+			}
+
+			// Find and execute the tool
+			for _, tool := range a.tools {
+				if tool.GetName() == toolName {
+					result, err := tool.Execute(json.RawMessage(toolInput))
+					if err != nil {
+						return fmt.Errorf("error executing tool %s: %w", toolName, err)
+					}
+
+					// Add tool result to messages
+					messages = append(messages, models.Message{
+						Role:    "assistant",
+						Content: fullResponse,
+					})
+					messages = append(messages, models.Message{
+						Role:    "user",
+						Content: fmt.Sprintf("Tool result: %s", result),
+					})
+
+					// Get model's response to the tool result
+					fmt.Printf("%sAssistant: %s", colorGreen, colorReset)
+					err = a.model.StreamResponse(ctx, messages, func(chunk string) error {
+						// Color tool usage in yellow
+						if strings.Contains(chunk, "[Tool:") {
+							fmt.Printf("%s%s%s", colorYellow, chunk, colorReset)
+						} else {
+							fmt.Print(chunk)
+						}
+						fullResponse += chunk
+						return nil
+					})
+					if err != nil {
+						return fmt.Errorf("error getting model response to tool result: %w", err)
+					}
+					break
+				}
+			}
 		}
 
 		// Update statistics
@@ -107,10 +224,12 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.stats.TotalInputTokens += int64(inputTokens)
 			a.stats.TotalOutputTokens += int64(outputTokens)
 
-			fmt.Printf("\n\n[Stats] Response time: %v, Input tokens: %d, Output tokens: %d\n",
+			fmt.Printf("\n\n%s[Stats] Response time: %v, Input tokens: %d, Output tokens: %d%s\n",
+				colorYellow,
 				a.stats.LastResponseTime.Round(time.Millisecond),
 				int64(inputTokens),
-				int64(outputTokens))
+				int64(outputTokens),
+				colorReset)
 		}
 
 		// Add assistant response to history

@@ -74,6 +74,8 @@ func main() {
 		tools.NewReadFileTool(),
 		tools.NewListFilesTool(),
 		tools.NewEditFileTool(),
+		tools.NewSearchFileTool(),
+		tools.NewFindFileTool(),
 	}
 
 	// Initialize user input
