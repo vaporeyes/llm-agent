@@ -36,7 +36,7 @@ func readFile(input json.RawMessage) (string, error) {
 	if err := json.Unmarshal(input, &readFileInput); err != nil {
 		return "", err
 	}
-
+	//
 	content, err := os.ReadFile(readFileInput.Path)
 	if err != nil {
 		return "", err

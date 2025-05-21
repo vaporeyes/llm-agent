@@ -2,8 +2,10 @@ package models
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"llm-agent/pkg/tools"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -11,6 +13,7 @@ import (
 type ChatGPTModel struct {
 	client *openai.Client
 	config ModelConfig
+	tools  []openai.Tool
 }
 
 func NewChatGPTModel(config ModelConfig) (*ChatGPTModel, error) {
@@ -43,6 +46,7 @@ func (m *ChatGPTModel) GenerateResponse(ctx context.Context, messages []Message)
 		Messages:    openaiMessages,
 		MaxTokens:   m.config.MaxTokens,
 		Temperature: float32(m.config.Temperature),
+		Tools:       m.tools,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create chat completion: %w", err)
@@ -77,6 +81,7 @@ func (m *ChatGPTModel) StreamResponse(ctx context.Context, messages []Message, o
 		Messages:    openaiMessages,
 		MaxTokens:   m.config.MaxTokens,
 		Temperature: float32(m.config.Temperature),
+		Tools:       m.tools,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create chat completion stream: %w", err)
@@ -107,4 +112,28 @@ func (m *ChatGPTModel) GetName() string {
 
 func (m *ChatGPTModel) GetMaxTokens() int {
 	return m.config.MaxTokens
+}
+
+func (m *ChatGPTModel) SetTools(tools []tools.Tool) error {
+	// Convert our tools to ChatGPT's tool format
+	chatGPTTools := make([]openai.Tool, len(tools))
+	for i, tool := range tools {
+		// Parse the input schema
+		var schema map[string]interface{}
+		if err := json.Unmarshal(tool.GetInputSchema(), &schema); err != nil {
+			return fmt.Errorf("failed to parse tool schema: %w", err)
+		}
+
+		chatGPTTools[i] = openai.Tool{
+			Type: "function",
+			Function: &openai.FunctionDefinition{
+				Name:        tool.GetName(),
+				Description: tool.GetDescription(),
+				Parameters:  schema,
+			},
+		}
+	}
+
+	m.tools = chatGPTTools
+	return nil
 }

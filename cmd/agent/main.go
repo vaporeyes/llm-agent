@@ -11,7 +11,6 @@ import (
 
 	"llm-agent/pkg/agent"
 	"llm-agent/pkg/models"
-	"llm-agent/pkg/tools"
 )
 
 func main() {
@@ -21,6 +20,7 @@ func main() {
 	claudeModel := flag.String("claude-model", "claude-3-sonnet-20240229", "Model to use with Claude (e.g., claude-3-sonnet-20240229, claude-3-opus-20240229)")
 	chatgptModel := flag.String("chatgpt-model", "gpt-3.5-turbo", "Model to use with ChatGPT (e.g., gpt-3.5-turbo, gpt-4)")
 	storagePath := flag.String("storage", "chat_history.json", "Path to store chat history")
+	workspaceRoot := flag.String("workspace", ".", "Workspace root directory")
 	flag.Parse()
 
 	// Initialize model
@@ -69,15 +69,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize tools
-	availableTools := []tools.Tool{
-		tools.NewReadFileTool(),
-		tools.NewListFilesTool(),
-		tools.NewEditFileTool(),
-		tools.NewSearchFileTool(),
-		tools.NewFindFileTool(),
-	}
-
 	// Initialize user input
 	scanner := bufio.NewScanner(os.Stdin)
 	getUserInput := func() (string, bool) {
@@ -88,7 +79,14 @@ func main() {
 	}
 
 	// Create and run agent
-	agent, err := agent.NewAgent(model, getUserInput, availableTools, *showStats, *storagePath)
+	agent, err := agent.NewAgent(
+		model,
+		getUserInput,
+		nil, // tools will be initialized by the agent
+		*showStats,
+		*storagePath,
+		*workspaceRoot,
+	)
 	if err != nil {
 		fmt.Printf("Error creating agent: %v\n", err)
 		os.Exit(1)

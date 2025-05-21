@@ -2,7 +2,9 @@ package models
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"llm-agent/pkg/tools"
 
 	"github.com/anthropics/anthropic-sdk-go"
 )
@@ -25,8 +27,36 @@ func NewClaudeModel(config ModelConfig) (*ClaudeModel, error) {
 	}, nil
 }
 
-func (m *ClaudeModel) SetTools(tools []anthropic.ToolUnionParam) {
-	m.tools = tools
+func (m *ClaudeModel) SetTools(tools []tools.Tool) error {
+	// Convert our tools to Claude's tool format
+	claudeTools := make([]anthropic.ToolUnionParam, len(tools))
+	for i, tool := range tools {
+		// Parse the input schema
+		var schema map[string]interface{}
+		if err := json.Unmarshal(tool.GetInputSchema(), &schema); err != nil {
+			return fmt.Errorf("failed to parse tool schema: %w", err)
+		}
+
+		// Create the tool input schema
+		inputSchema := anthropic.ToolInputSchemaParam{
+			Type:        "object",
+			Properties:  schema["properties"],
+			ExtraFields: make(map[string]interface{}),
+		}
+
+		// Add required fields if present
+		if required, ok := schema["required"].([]interface{}); ok {
+			inputSchema.ExtraFields["required"] = required
+		}
+
+		claudeTools[i] = anthropic.ToolUnionParamOfTool(
+			inputSchema,
+			tool.GetName(),
+		)
+	}
+
+	m.tools = claudeTools
+	return nil
 }
 
 func (m *ClaudeModel) GenerateResponse(ctx context.Context, messages []Message) (*Response, error) {

@@ -51,9 +51,9 @@ func (t *SummarizeFileTool) Execute(input json.RawMessage) (string, error) {
 	}
 
 	// Validate and sanitize the path
-	absPath := filepath.Join(t.workspaceRoot, params.Path)
-	if !strings.HasPrefix(absPath, t.workspaceRoot) {
-		return "", fmt.Errorf("path must be within workspace root")
+	absPath, err := filepath.Abs(filepath.Join(t.workspaceRoot, params.Path))
+	if err != nil {
+		return "", fmt.Errorf("error getting filepath")
 	}
 
 	// Check if file exists

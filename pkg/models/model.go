@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"llm-agent/pkg/tools"
 )
 
 // Message represents a chat message
@@ -30,17 +31,20 @@ type ModelConfig struct {
 	Temperature float64
 }
 
-// Model defines the interface for LLM models
+// Model defines the interface for different LLM models
 type Model interface {
-	// GenerateResponse generates a complete response
+	// GenerateResponse generates a complete response for the given messages
 	GenerateResponse(ctx context.Context, messages []Message) (*Response, error)
 
-	// StreamResponse streams a response chunk by chunk
+	// StreamResponse streams the response for the given messages
 	StreamResponse(ctx context.Context, messages []Message, onChunk func(chunk string) error) error
 
 	// GetName returns the name of the model
 	GetName() string
 
-	// GetMaxTokens returns the maximum number of tokens the model can handle
+	// GetMaxTokens returns the maximum number of tokens the model can generate
 	GetMaxTokens() int
+
+	// SetTools sets the available tools for the model
+	SetTools(tools []tools.Tool) error
 }
