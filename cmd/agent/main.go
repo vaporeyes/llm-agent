@@ -18,7 +18,7 @@ func main() {
 	showStats := flag.Bool("stats", false, "Show statistics when the program exits")
 	modelType := flag.String("model", "claude", "Model to use (claude, chatgpt, ollama)")
 	ollamaModel := flag.String("ollama-model", "llama2", "Model to use with Ollama (e.g., llama2, mistral)")
-	claudeModel := flag.String("claude-model", "claude-3-sonnet-20240229", "Model to use with Claude (e.g., claude-3-sonnet-20240229, claude-3-opus-20240229)")
+	claudeModel := flag.String("claude-model", "claude-sonnet-5-5", "Model to use with Claude (e.g., claude-sonnet-5-5, claude-opus-5-5)")
 	chatgptModel := flag.String("chatgpt-model", "gpt-3.5-turbo", "Model to use with ChatGPT (e.g., gpt-3.5-turbo, gpt-4)")
 	storagePath := flag.String("storage", "chat_history.json", "Path to store chat history")
 	workspaceRoot := flag.String("workspace", ".", "Workspace root directory")

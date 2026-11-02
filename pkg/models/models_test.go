@@ -11,7 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"llm-agent/pkg/tools"
+
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -115,5 +118,47 @@ func TestParseTextToolCall(t *testing.T) {
 	call, ok = parseTextToolCall("<tool>{broken</tool>")
 	if !ok || call.Name != "" {
 		t.Fatalf("malformed call = %+v ok=%v", call, ok)
+	}
+}
+
+func TestClaudeRequestUsesConfigAndToolDescriptions(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"x\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n")
+		fmt.Fprint(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n")
+		fmt.Fprint(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		fmt.Fprint(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n")
+		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer srv.Close()
+
+	m, err := NewClaudeModel(ModelConfig{APIKey: "key-from-config", ModelName: "claude-test", MaxTokens: 10, Temperature: 0.2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL))
+	m.client = &client
+	if err := m.SetTools([]tools.Tool{tools.NewReadFileTool()}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := m.StreamResponse(context.Background(), []Message{{Role: "user", Content: "hi"}}, func(string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "hello" || resp.Usage.InputTokens != 3 || resp.Usage.OutputTokens != 5 {
+		t.Errorf("resp = %+v", resp)
+	}
+	if body["model"] != "claude-test" || body["temperature"] != 0.2 {
+		t.Errorf("model/temperature = %v/%v", body["model"], body["temperature"])
+	}
+	toolsJSON, _ := json.Marshal(body["tools"])
+	if !strings.Contains(string(toolsJSON), `"description":"Read the contents`) {
+		t.Errorf("tool description missing: %s", toolsJSON)
 	}
 }

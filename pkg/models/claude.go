@@ -7,6 +7,7 @@ import (
 	"llm-agent/pkg/tools"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
 type ClaudeModel struct {
@@ -20,7 +21,7 @@ func NewClaudeModel(config ModelConfig) (*ClaudeModel, error) {
 		return nil, fmt.Errorf("API key is required for Claude model")
 	}
 
-	client := anthropic.NewClient()
+	client := anthropic.NewClient(option.WithAPIKey(config.APIKey))
 	return &ClaudeModel{
 		client: &client,
 		config: config,
@@ -49,10 +50,11 @@ func (m *ClaudeModel) SetTools(tools []tools.Tool) error {
 			inputSchema.ExtraFields["required"] = required
 		}
 
-		claudeTools[i] = anthropic.ToolUnionParamOfTool(
-			inputSchema,
-			tool.GetName(),
-		)
+		claudeTools[i] = anthropic.ToolUnionParam{OfTool: &anthropic.ToolParam{
+			Name:        tool.GetName(),
+			Description: anthropic.String(tool.GetDescription()),
+			InputSchema: inputSchema,
+		}}
 	}
 
 	m.tools = claudeTools
@@ -98,11 +100,12 @@ func (m *ClaudeModel) StreamResponse(ctx context.Context, messages []Message, on
 	system, anthropicMessages := toAnthropicMessages(messages)
 
 	stream := m.client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.ModelClaude3_7SonnetLatest,
-		MaxTokens: int64(m.config.MaxTokens),
-		System:    system,
-		Messages:  anthropicMessages,
-		Tools:     m.tools,
+		Model:       anthropic.Model(m.config.ModelName),
+		MaxTokens:   int64(m.config.MaxTokens),
+		Temperature: anthropic.Float(m.config.Temperature),
+		System:      system,
+		Messages:    anthropicMessages,
+		Tools:       m.tools,
 	})
 	defer stream.Close()
 
