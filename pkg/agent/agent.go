@@ -100,6 +100,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// One conversation ID links every message in this session
 	conversationID := uuid.New().String()
 
+turns:
 	for {
 		// Get user input
 		fmt.Printf("%sYou: %s", colorBlue, colorReset)
@@ -112,7 +113,8 @@ func (a *Agent) Run(ctx context.Context) error {
 			continue
 		}
 
-		// Add user message to history
+		// Add user message to history, remembering where this turn starts
+		turnStart := len(messages)
 		userMsg := models.Message{
 			Role:    "user",
 			Content: input,
@@ -134,7 +136,10 @@ func (a *Agent) Run(ctx context.Context) error {
 				return nil
 			})
 			if err != nil {
-				return fmt.Errorf("error getting model response: %w", err)
+				// Drop the unanswered turn so the history stays valid for the next request
+				fmt.Printf("\nError getting model response: %v\n\n", err)
+				messages = messages[:turnStart]
+				continue turns
 			}
 			fmt.Println()
 			fullResponse += resp.Content
@@ -153,10 +158,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 
 			for _, call := range resp.ToolCalls {
-				result, err := a.executeTool(call)
-				if err != nil {
-					return fmt.Errorf("error executing tool %s: %w", call.Name, err)
-				}
+				result := a.executeTool(call)
 
 				// Add tool result to messages
 				toolMsg := models.Message{
@@ -203,17 +205,18 @@ func (a *Agent) save(msg models.Message, usage models.Usage, conversationID stri
 }
 
 // executeTool runs one tool call, showing a spinner while it works.
-// Unknown or malformed calls produce an error message for the model rather than a Go error,
-// because every tool call must be answered for the conversation to stay valid.
-func (a *Agent) executeTool(call models.ToolCall) (string, error) {
+// Failures are returned as an error message for the model rather than a Go error,
+// because every tool call must be answered for the conversation to stay valid
+// and the model can often recover, for example by fixing a mistyped path.
+func (a *Agent) executeTool(call models.ToolCall) string {
 	fmt.Printf("%s[Tool: %s] %s%s\n", colorYellow, call.Name, string(call.Input), colorReset)
 
 	if call.Name == "" {
-		return `error: malformed tool call, expected <tool>{"name": "...", "arguments": {...}}</tool>`, nil
+		return `error: malformed tool call, expected <tool>{"name": "...", "arguments": {...}}</tool>`
 	}
 	tool, ok := a.toolsByName[call.Name]
 	if !ok {
-		return fmt.Sprintf("error: unknown tool %q", call.Name), nil
+		return fmt.Sprintf("error: unknown tool %q", call.Name)
 	}
 
 	// Start spinner in a goroutine
@@ -236,12 +239,12 @@ func (a *Agent) executeTool(call models.ToolCall) (string, error) {
 	done <- true    // Stop the spinner
 	fmt.Print("\r") // Clear the spinner line
 	if err != nil {
-		return "", err
+		result = fmt.Sprintf("error: %v", err)
 	}
 
 	// Print tool result in yellow
 	fmt.Printf("%s<result>%s</result>%s\n", colorYellow, result, colorReset)
-	return result, nil
+	return result
 }
 
 // buildSystemPrompt describes the available tools in the format the model family expects
