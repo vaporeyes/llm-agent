@@ -11,6 +11,7 @@ import (
 
 	"llm-agent/pkg/agent"
 	"llm-agent/pkg/models"
+	"llm-agent/pkg/tools"
 )
 
 func main() {
@@ -82,7 +83,12 @@ func main() {
 	agent, err := agent.NewAgent(
 		model,
 		getUserInput,
-		nil, // tools will be initialized by the agent
+		[]tools.Tool{
+			tools.NewReadFileTool(),
+			tools.NewListDirTool(*workspaceRoot),
+			tools.NewSearchFileTool(),
+			tools.NewSummarizeFileTool(*workspaceRoot),
+		},
 		*showStats,
 		*storagePath,
 		*workspaceRoot,

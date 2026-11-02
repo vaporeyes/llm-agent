@@ -84,65 +84,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.model.GetName(),
 		colorReset)
 
-	var messages []models.Message
-
 	// Add system message to describe available tools
-	toolDescriptions := make([]string, len(a.tools))
-	for i, tool := range a.tools {
-		toolDescriptions[i] = fmt.Sprintf("- %s: %s", tool.GetName(), tool.GetDescription())
-	}
-
-	var systemMessage string
-	baseModelType := strings.Split(a.model.GetName(), "-")[0]
-	if baseModelType == "ollama" {
-		systemMessage = fmt.Sprintf(`<system>
-You are a helpful AI assistant with access to the following tools:
-
-%s
-
-## Instructions for tool usage:
-1. When a user asks you to perform a task requiring these tools, analyze which tool is appropriate.
-2. To use a tool, format your response using JSON within <tool></tool> tags:
-   <tool>
-   {
-     "name": "tool_name",
-     "arguments": {
-       "param1": "value1",
-       "param2": "value2"
-     }
-   }
-   </tool>
-
-3. After each tool call, wait for the result which will appear in <result></result> tags.
-4. Explain your reasoning both before and after using tools.
-5. Present results clearly with appropriate formatting.
-
-Remember that you're running locally with limited resources, so be efficient with your reasoning.
-</system>`, strings.Join(toolDescriptions, "\n"))
-	} else {
-		systemMessage = fmt.Sprintf(`You are a helpful AI assistant with access to the following tools:
-
-%s
-
-When a user asks you to perform a task that can be done using these tools, you should use them. Always explain what you're doing and show the results of each tool usage. If a user asks a question that is not related to tool usage, answer the question as normal.`, strings.Join(toolDescriptions, "\n"))
-	}
-	messages = append(messages, models.Message{
+	messages := []models.Message{{
 		Role:    "system",
-		Content: systemMessage,
-	})
-
-	// Initialize tools
-	a.tools = []tools.Tool{
-		tools.NewReadFileTool(),
-		tools.NewListDirTool(a.workspaceRoot),
-		tools.NewSearchFileTool(),
-		tools.NewSummarizeFileTool(a.workspaceRoot),
-	}
-
-	// Set tools for the model
-	if err := a.model.SetTools(a.tools); err != nil {
-		return fmt.Errorf("failed to set tools: %w", err)
-	}
+		Content: buildSystemPrompt(a.model.GetName(), a.tools),
+	}}
 
 	for {
 		// Get user input
@@ -345,6 +291,47 @@ When a user asks you to perform a task that can be done using these tools, you s
 		// Add a newline before the next user input
 		fmt.Println()
 	}
+}
+
+// buildSystemPrompt describes the available tools in the format the model family expects
+func buildSystemPrompt(modelName string, agentTools []tools.Tool) string {
+	toolDescriptions := make([]string, len(agentTools))
+	for i, tool := range agentTools {
+		toolDescriptions[i] = fmt.Sprintf("- %s: %s", tool.GetName(), tool.GetDescription())
+	}
+
+	baseModelType := strings.Split(modelName, "-")[0]
+	if baseModelType == "ollama" {
+		return fmt.Sprintf(`<system>
+You are a helpful AI assistant with access to the following tools:
+
+%s
+
+## Instructions for tool usage:
+1. When a user asks you to perform a task requiring these tools, analyze which tool is appropriate.
+2. To use a tool, format your response using JSON within <tool></tool> tags:
+   <tool>
+   {
+     "name": "tool_name",
+     "arguments": {
+       "param1": "value1",
+       "param2": "value2"
+     }
+   }
+   </tool>
+
+3. After each tool call, wait for the result which will appear in <result></result> tags.
+4. Explain your reasoning both before and after using tools.
+5. Present results clearly with appropriate formatting.
+
+Remember that you're running locally with limited resources, so be efficient with your reasoning.
+</system>`, strings.Join(toolDescriptions, "\n"))
+	}
+	return fmt.Sprintf(`You are a helpful AI assistant with access to the following tools:
+
+%s
+
+When a user asks you to perform a task that can be done using these tools, you should use them. Always explain what you're doing and show the results of each tool usage. If a user asks a question that is not related to tool usage, answer the question as normal.`, strings.Join(toolDescriptions, "\n"))
 }
 
 // PrintStats prints the agent's statistics
