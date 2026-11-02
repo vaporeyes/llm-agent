@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -50,9 +49,9 @@ func (t *ListDirTool) Execute(input json.RawMessage) (string, error) {
 	}
 
 	// Validate and sanitize the path
-	absPath := filepath.Join(t.workspaceRoot, params.Path)
-	if !strings.HasPrefix(absPath, t.workspaceRoot) {
-		return "", fmt.Errorf("path must be within workspace root")
+	absPath, err := resolveInWorkspace(t.workspaceRoot, params.Path)
+	if err != nil {
+		return "", err
 	}
 
 	// Check if directory exists

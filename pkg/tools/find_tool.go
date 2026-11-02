@@ -13,13 +13,13 @@ type FindFileTool struct {
 	BaseTool
 }
 
-func NewFindFileTool() *FindFileTool {
+func NewFindFileTool(workspaceRoot string) *FindFileTool {
 	return &FindFileTool{
 		BaseTool: BaseTool{
 			Name:        "find_file",
 			Description: "Find files in a directory that match a name pattern. Supports glob patterns like *.txt or *test*.go",
 			InputSchema: generateSchema[FindFileInput](),
-			ExecuteFn:   findFile,
+			ExecuteFn:   func(input json.RawMessage) (string, error) { return findFile(workspaceRoot, input) },
 		},
 	}
 }
@@ -29,7 +29,7 @@ type FindFileInput struct {
 	Pattern string `json:"pattern" jsonschema_description:"The file name pattern to match (e.g., *.txt, *test*.go)"`
 }
 
-func findFile(input json.RawMessage) (string, error) {
+func findFile(workspaceRoot string, input json.RawMessage) (string, error) {
 	var findInput FindFileInput
 	if err := json.Unmarshal(input, &findInput); err != nil {
 		return "", err
@@ -40,10 +40,10 @@ func findFile(input json.RawMessage) (string, error) {
 		return "", fmt.Errorf("pattern is required")
 	}
 
-	// Set default directory to current directory if not specified
-	dir := "."
-	if findInput.Dir != "" {
-		dir = findInput.Dir
+	// Default to the workspace root if no directory is specified
+	dir, err := resolveInWorkspace(workspaceRoot, findInput.Dir)
+	if err != nil {
+		return "", err
 	}
 
 	// Verify directory exists
@@ -53,7 +53,7 @@ func findFile(input json.RawMessage) (string, error) {
 
 	// Find matching files
 	var matches []string
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}

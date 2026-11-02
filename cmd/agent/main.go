@@ -95,9 +95,9 @@ func main() {
 		model,
 		getUserInput,
 		[]tools.Tool{
-			tools.NewReadFileTool(),
+			tools.NewReadFileTool(*workspaceRoot),
 			tools.NewListDirTool(*workspaceRoot),
-			tools.NewSearchFileTool(),
+			tools.NewSearchFileTool(*workspaceRoot),
 			tools.NewSummarizeFileTool(*workspaceRoot),
 		},
 		*showStats,

@@ -144,7 +144,7 @@ func TestClaudeRequestUsesConfigAndToolDescriptions(t *testing.T) {
 	}
 	client := anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL))
 	m.client = &client
-	if err := m.SetTools([]tools.Tool{tools.NewReadFileTool()}); err != nil {
+	if err := m.SetTools([]tools.Tool{tools.NewReadFileTool(".")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -185,7 +185,7 @@ func TestOllamaStreamsBeforeResponseCompletes(t *testing.T) {
 	defer srv.Close()
 
 	m, _ := NewOllamaModel(ModelConfig{ModelName: "llama-test", BaseURL: srv.URL + "/"})
-	if err := m.SetTools([]tools.Tool{tools.NewReadFileTool()}); err != nil {
+	if err := m.SetTools([]tools.Tool{tools.NewReadFileTool(".")}); err != nil {
 		t.Fatal(err)
 	}
 
