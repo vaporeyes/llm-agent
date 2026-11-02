@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -104,7 +105,10 @@ turns:
 	for {
 		// Get user input
 		fmt.Printf("%sYou: %s", colorBlue, colorReset)
-		input, ok := a.getUserInput()
+		input, ok, err := a.readInput(ctx)
+		if err != nil {
+			return err
+		}
 		if !ok {
 			return nil
 		}
@@ -136,6 +140,9 @@ turns:
 				return nil
 			})
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				// Drop the unanswered turn so the history stays valid for the next request
 				fmt.Printf("\nError getting model response: %v\n\n", err)
 				messages = messages[:turnStart]
@@ -197,6 +204,28 @@ turns:
 	}
 }
 
+// readInput waits for the next line of user input or for ctx to be cancelled.
+// Blocking reads such as bufio.Scanner cannot observe ctx, so the read runs in a
+// goroutine; on cancellation it stays blocked on stdin until the process exits,
+// and the buffered channel lets it finish without a receiver.
+func (a *Agent) readInput(ctx context.Context) (string, bool, error) {
+	type line struct {
+		text string
+		ok   bool
+	}
+	lines := make(chan line, 1)
+	go func() {
+		text, ok := a.getUserInput()
+		lines <- line{text, ok}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", false, ctx.Err()
+	case l := <-lines:
+		return l.text, l.ok, nil
+	}
+}
+
 // save records a message in chat storage, warning rather than failing on error
 func (a *Agent) save(msg models.Message, usage models.Usage, conversationID string) {
 	if err := a.storage.SaveMessage(msg, a.model.GetName(), usage, conversationID); err != nil {
@@ -219,25 +248,30 @@ func (a *Agent) executeTool(call models.ToolCall) string {
 		return fmt.Sprintf("error: unknown tool %q", call.Name)
 	}
 
-	// Start spinner in a goroutine
-	done := make(chan bool)
+	// Start spinner in a goroutine; stopSpinner waits for it to exit so it
+	// cannot write over the result, and runs even if the tool panics
+	done := make(chan struct{})
+	finished := make(chan struct{})
 	go func() {
-		i := 0
-		for {
+		defer close(finished)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for i := 0; ; i = (i + 1) % len(spinnerFrames) {
+			fmt.Printf("\r%s%s%s", colorYellow, spinnerFrames[i], colorReset)
 			select {
 			case <-done:
 				return
-			default:
-				fmt.Printf("\r%s%s%s", colorYellow, spinnerFrames[i], colorReset)
-				i = (i + 1) % len(spinnerFrames)
-				time.Sleep(100 * time.Millisecond)
+			case <-ticker.C:
 			}
 		}
 	}()
+	stopSpinner := func() {
+		close(done) // Stop the spinner
+		<-finished
+		fmt.Print("\r") // Clear the spinner line
+	}
 
-	result, err := tool.Execute(call.Input)
-	done <- true    // Stop the spinner
-	fmt.Print("\r") // Clear the spinner line
+	result, err := runTool(tool, call.Input, stopSpinner)
 	if err != nil {
 		result = fmt.Sprintf("error: %v", err)
 	}
@@ -245,6 +279,12 @@ func (a *Agent) executeTool(call models.ToolCall) string {
 	// Print tool result in yellow
 	fmt.Printf("%s<result>%s</result>%s\n", colorYellow, result, colorReset)
 	return result
+}
+
+// runTool executes tool and always calls stop afterwards, including on panic
+func runTool(tool tools.Tool, input json.RawMessage, stop func()) (string, error) {
+	defer stop()
+	return tool.Execute(input)
 }
 
 // buildSystemPrompt describes the available tools in the format the model family expects

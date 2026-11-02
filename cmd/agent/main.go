@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -97,24 +98,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Set up signal handling for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Run the agent in a goroutine
-	errChan := make(chan error, 1)
+	// Set up signal handling for graceful shutdown. The first signal cancels
+	// ctx so Run can stop at a safe point; restoring default handling after it
+	// lets a second signal terminate a stuck process.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	go func() {
-		errChan <- agent.Run(context.TODO())
+		<-ctx.Done()
+		stop()
 	}()
 
-	// Wait for either an error or a signal
-	select {
-	case err := <-errChan:
-		if err != nil {
+	// Run blocks until input ends, an unrecoverable error occurs, or ctx is cancelled
+	if err := agent.Run(ctx); err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Println("\nReceived interrupt signal, shutting down...")
+		} else {
 			fmt.Printf("Error: %s\n", err.Error())
 		}
-	case <-sigChan:
-		fmt.Println("\nReceived interrupt signal, shutting down...")
 	}
 
 	if *showStats {

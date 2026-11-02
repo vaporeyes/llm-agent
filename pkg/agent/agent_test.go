@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"llm-agent/pkg/models"
 	"llm-agent/pkg/tools"
@@ -254,5 +255,57 @@ func TestRunSurvivesModelErrors(t *testing.T) {
 	}
 	if m.seen[2][1].Content != "second" {
 		t.Errorf("user content = %q", m.seen[2][1].Content)
+	}
+}
+
+func TestRunStopsWhenCancelledWhileWaitingForInput(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	a, err := NewAgent(&fakeModel{name: "fake"}, func() (string, bool) { <-block; return "", false }, nil, false, filepath.Join(t.TempDir(), "h.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	if err := a.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run returned %v, want context.Canceled", err)
+	}
+}
+
+// cancellingModel cancels the run during the request, as a signal would
+type cancellingModel struct {
+	fakeModel
+	cancel context.CancelFunc
+}
+
+func (m *cancellingModel) StreamResponse(ctx context.Context, _ []models.Message, _ func(string) error) (*models.Response, error) {
+	m.cancel()
+	return nil, ctx.Err()
+}
+
+func TestRunStopsWhenCancelledDuringModelCall(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := &cancellingModel{fakeModel: fakeModel{name: "fake"}, cancel: cancel}
+	a, err := NewAgent(m, inputs("hello", "never read"), nil, false, filepath.Join(t.TempDir(), "h.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run returned %v, want context.Canceled", err)
+	}
+}
+
+func TestToolPanicStillStopsSpinner(t *testing.T) {
+	panicky := &tools.BaseTool{Name: "boom", ExecuteFn: func(json.RawMessage) (string, error) { panic("boom") }}
+	stopped := false
+	func() {
+		defer func() { _ = recover() }()
+		_, _ = runTool(panicky, nil, func() { stopped = true })
+	}()
+	if !stopped {
+		t.Fatal("stop was not called after panic")
 	}
 }
