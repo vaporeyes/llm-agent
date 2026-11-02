@@ -184,8 +184,7 @@ func TestOllamaStreamsBeforeResponseCompletes(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m, _ := NewOllamaModel(ModelConfig{ModelName: "llama-test"})
-	m.baseURL = srv.URL
+	m, _ := NewOllamaModel(ModelConfig{ModelName: "llama-test", BaseURL: srv.URL + "/"})
 	if err := m.SetTools([]tools.Tool{tools.NewReadFileTool()}); err != nil {
 		t.Fatal(err)
 	}
@@ -220,10 +219,20 @@ func TestOllamaErrorIncludesResponseBody(t *testing.T) {
 		http.Error(w, `{"error":"model \"nope\" not found, try pulling it first"}`, http.StatusNotFound)
 	}))
 	defer srv.Close()
-	m, _ := NewOllamaModel(ModelConfig{ModelName: "nope"})
-	m.baseURL = srv.URL
+	m, _ := NewOllamaModel(ModelConfig{ModelName: "nope", BaseURL: srv.URL})
 	_, err := m.StreamResponse(context.Background(), []Message{{Role: "user", Content: "hi"}}, func(string) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "404") || !strings.Contains(err.Error(), "not found, try pulling it first") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestOllamaClientHasHeaderTimeout(t *testing.T) {
+	m, _ := NewOllamaModel(ModelConfig{})
+	if m.baseURL != DefaultOllamaURL {
+		t.Errorf("baseURL = %q", m.baseURL)
+	}
+	transport, ok := m.client.Transport.(*http.Transport)
+	if !ok || transport.ResponseHeaderTimeout != responseHeaderTimeout {
+		t.Fatalf("transport = %#v", m.client.Transport)
 	}
 }

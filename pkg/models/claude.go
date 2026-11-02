@@ -21,7 +21,7 @@ func NewClaudeModel(config ModelConfig) (*ClaudeModel, error) {
 		return nil, fmt.Errorf("API key is required for Claude model")
 	}
 
-	client := anthropic.NewClient(option.WithAPIKey(config.APIKey))
+	client := anthropic.NewClient(option.WithAPIKey(config.APIKey), option.WithHTTPClient(newHTTPClient()))
 	return &ClaudeModel{
 		client: &client,
 		config: config,

@@ -87,6 +87,7 @@ go run ./cmd/agent
 - `-stats`: Show token usage statistics after each response and when exiting
 - `-model`: Select the model to use ("claude" or "ollama")
 - `-ollama-model`: Select the Ollama model to use (e.g., "llama2", "mistral")
+- `-ollama-url`: Base URL of the Ollama server (default `http://localhost:11434`)
 
 Examples:
 

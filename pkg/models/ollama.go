@@ -66,15 +66,23 @@ type ollamaResponse struct {
 	EvalDuration    int64   `json:"eval_duration"`
 }
 
+// DefaultOllamaURL is where a locally installed Ollama listens
+const DefaultOllamaURL = "http://localhost:11434"
+
 func NewOllamaModel(config ModelConfig) (*OllamaModel, error) {
 	if config.ModelName == "" {
 		config.ModelName = "llama2" // default model
 	}
 
+	baseURL := strings.TrimSuffix(config.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = DefaultOllamaURL
+	}
+
 	return &OllamaModel{
 		config:  config,
-		client:  &http.Client{},
-		baseURL: "http://localhost:11434",
+		client:  newHTTPClient(),
+		baseURL: baseURL,
 	}, nil
 }
 

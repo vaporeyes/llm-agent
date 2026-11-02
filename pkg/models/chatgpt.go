@@ -21,7 +21,9 @@ func NewChatGPTModel(config ModelConfig) (*ChatGPTModel, error) {
 		return nil, fmt.Errorf("API key is required for ChatGPT model")
 	}
 
-	client := openai.NewClient(config.APIKey)
+	clientConfig := openai.DefaultConfig(config.APIKey)
+	clientConfig.HTTPClient = newHTTPClient()
+	client := openai.NewClientWithConfig(clientConfig)
 	return &ChatGPTModel{
 		client: client,
 		config: config,

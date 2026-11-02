@@ -21,6 +21,7 @@ const maxInputBytes = 4 * 1024 * 1024
 func main() {
 	showStats := flag.Bool("stats", false, "Show statistics when the program exits")
 	modelType := flag.String("model", "claude", "Model to use (claude, chatgpt, ollama)")
+	ollamaURL := flag.String("ollama-url", models.DefaultOllamaURL, "Base URL of the Ollama server")
 	ollamaModel := flag.String("ollama-model", "llama2", "Model to use with Ollama (e.g., llama2, mistral)")
 	claudeModel := flag.String("claude-model", "claude-sonnet-5-5", "Model to use with Claude (e.g., claude-sonnet-5-5, claude-opus-5-5)")
 	chatgptModel := flag.String("chatgpt-model", "gpt-3.5-turbo", "Model to use with ChatGPT (e.g., gpt-3.5-turbo, gpt-4)")
@@ -60,6 +61,7 @@ func main() {
 		})
 	case "ollama":
 		model, err = models.NewOllamaModel(models.ModelConfig{
+			BaseURL:     *ollamaURL,
 			ModelName:   *ollamaModel,
 			MaxTokens:   1024,
 			Temperature: 0.7,
