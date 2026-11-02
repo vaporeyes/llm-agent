@@ -91,7 +91,6 @@ func main() {
 		},
 		*showStats,
 		*storagePath,
-		*workspaceRoot,
 	)
 	if err != nil {
 		fmt.Printf("Error creating agent: %v\n", err)

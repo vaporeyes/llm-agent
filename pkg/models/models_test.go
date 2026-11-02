@@ -1,0 +1,119 @@
+// ABOUTME: Tests for provider message conversion and tool call extraction.
+// ABOUTME: ChatGPT streaming is exercised against a local SSE server.
+package models
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/anthropics/anthropic-sdk-go"
+	openai "github.com/sashabaranov/go-openai"
+)
+
+var toolHistory = []Message{
+	{Role: "system", Content: "be helpful"},
+	{Role: "user", Content: "hi"},
+	{Role: "assistant", Content: "checking", ToolCalls: []ToolCall{
+		{ID: "a", Name: "read_file", Input: json.RawMessage(`{"path":"x"}`)},
+		{ID: "b", Name: "list_dir", Input: json.RawMessage(`{"path":"."}`)},
+	}},
+	{Role: "tool", Content: "file body", ToolCallID: "a"},
+	{Role: "tool", Content: "dir listing", ToolCallID: "b"},
+}
+
+func TestToAnthropicMessagesMapsRoles(t *testing.T) {
+	system, msgs := toAnthropicMessages(toolHistory)
+	if len(system) != 1 || system[0].Text != "be helpful" {
+		t.Fatalf("system = %+v", system)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages, want 3 (user, assistant, merged tool results)", len(msgs))
+	}
+	if msgs[0].Role != anthropic.MessageParamRoleUser || msgs[1].Role != anthropic.MessageParamRoleAssistant || msgs[2].Role != anthropic.MessageParamRoleUser {
+		t.Fatalf("roles = %s,%s,%s", msgs[0].Role, msgs[1].Role, msgs[2].Role)
+	}
+	if n := len(msgs[1].Content); n != 3 {
+		t.Fatalf("assistant blocks = %d, want text + 2 tool_use", n)
+	}
+	if use := msgs[1].Content[1].OfRequestToolUseBlock; use == nil || use.ID != "a" || use.Name != "read_file" {
+		t.Fatalf("tool_use block = %+v", msgs[1].Content[1])
+	}
+	if n := len(msgs[2].Content); n != 2 {
+		t.Fatalf("tool result blocks = %d, want 2", n)
+	}
+	if r := msgs[2].Content[1].OfRequestToolResultBlock; r == nil || r.ToolUseID != "b" {
+		t.Fatalf("second tool_result = %+v", msgs[2].Content[1])
+	}
+}
+
+func TestToOpenAIMessagesMapsToolCalls(t *testing.T) {
+	msgs := toOpenAIMessages(toolHistory)
+	if msgs[2].Role != "assistant" || len(msgs[2].ToolCalls) != 2 || msgs[2].ToolCalls[1].Function.Arguments != `{"path":"."}` {
+		t.Fatalf("assistant = %+v", msgs[2])
+	}
+	if msgs[3].Role != "tool" || msgs[3].ToolCallID != "a" {
+		t.Fatalf("tool = %+v", msgs[3])
+	}
+}
+
+func TestChatGPTStreamAssemblesToolCallDeltas(t *testing.T) {
+	chunks := []string{
+		`{"choices":[{"index":0,"delta":{"content":"let me look"}}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"pa"}}]}}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"a.go\"}"}}]}}]}`,
+		`{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":7}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, c := range chunks {
+			fmt.Fprintf(w, "data: %s\n\n", c)
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	cfg := openai.DefaultConfig("test")
+	cfg.BaseURL = srv.URL
+	m := &ChatGPTModel{client: openai.NewClientWithConfig(cfg), config: ModelConfig{ModelName: "gpt-test"}}
+
+	var streamed strings.Builder
+	resp, err := m.StreamResponse(context.Background(), []Message{{Role: "user", Content: "hi"}}, func(c string) error {
+		streamed.WriteString(c)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streamed.String() != "let me look" || resp.Content != "let me look" {
+		t.Errorf("content = %q / %q", streamed.String(), resp.Content)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %+v", resp.ToolCalls)
+	}
+	call := resp.ToolCalls[0]
+	if call.ID != "call_1" || call.Name != "read_file" || string(call.Input) != `{"path":"a.go"}` {
+		t.Errorf("call = %+v input=%s", call, call.Input)
+	}
+	if resp.Usage.InputTokens != 12 || resp.Usage.OutputTokens != 7 {
+		t.Errorf("usage = %+v", resp.Usage)
+	}
+}
+
+func TestParseTextToolCall(t *testing.T) {
+	call, ok := parseTextToolCall("sure\n<tool>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"a\"}}\n</tool>")
+	if !ok || call.Name != "read_file" || string(call.Input) != `{"path": "a"}` {
+		t.Fatalf("call = %+v ok=%v", call, ok)
+	}
+	if _, ok := parseTextToolCall("no tools here"); ok {
+		t.Fatal("expected no call")
+	}
+	call, ok = parseTextToolCall("<tool>{broken</tool>")
+	if !ok || call.Name != "" {
+		t.Fatalf("malformed call = %+v ok=%v", call, ok)
+	}
+}

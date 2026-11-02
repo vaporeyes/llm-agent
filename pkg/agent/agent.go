@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -28,6 +27,9 @@ const (
 	colorOrange = "\033[38;5;208m" // Light orange for version and model info
 )
 
+// maxToolIterations bounds how many model calls one user message can trigger
+const maxToolIterations = 10
+
 // Spinner animation frames
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
@@ -41,37 +43,42 @@ type Statistics struct {
 
 // Agent represents a chat agent that can interact with an LLM and use tools
 type Agent struct {
-	model         models.Model
-	getUserInput  func() (string, bool)
-	tools         []tools.Tool
-	showStats     bool
-	stats         Statistics
-	storage       *storage.ChatStorage
-	workspaceRoot string
+	model        models.Model
+	getUserInput func() (string, bool)
+	tools        []tools.Tool
+	toolsByName  map[string]tools.Tool
+	showStats    bool
+	stats        Statistics
+	storage      *storage.ChatStorage
 }
 
 // NewAgent creates a new agent with the given model and tools
-func NewAgent(model models.Model, getUserInput func() (string, bool), tools []tools.Tool, showStats bool, storagePath string, workspaceRoot string) (*Agent, error) {
+func NewAgent(model models.Model, getUserInput func() (string, bool), agentTools []tools.Tool, showStats bool, storagePath string) (*Agent, error) {
 	chatStorage, err := storage.NewChatStorage(storagePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize chat storage: %w", err)
 	}
 
 	// Set tools for the model
-	if err := model.SetTools(tools); err != nil {
+	if err := model.SetTools(agentTools); err != nil {
 		return nil, fmt.Errorf("failed to set tools: %w", err)
+	}
+
+	toolsByName := make(map[string]tools.Tool, len(agentTools))
+	for _, tool := range agentTools {
+		toolsByName[tool.GetName()] = tool
 	}
 
 	return &Agent{
 		model:        model,
 		getUserInput: getUserInput,
-		tools:        tools,
+		tools:        agentTools,
+		toolsByName:  toolsByName,
 		showStats:    showStats,
 		stats: Statistics{
 			StartTime: time.Now(),
 		},
-		storage:       chatStorage,
-		workspaceRoot: workspaceRoot,
+		storage: chatStorage,
 	}, nil
 }
 
@@ -113,147 +120,56 @@ func (a *Agent) Run(ctx context.Context) error {
 		messages = append(messages, userMsg)
 
 		// Save user message
-		if err := a.storage.SaveMessage(userMsg, a.model.GetName(), models.Usage{
-			InputTokens: int64(len(strings.Fields(input))),
-		}, conversationID); err != nil {
-			fmt.Printf("Warning: failed to save user message: %v\n", err)
-		}
+		a.save(userMsg, models.Usage{InputTokens: int64(len(strings.Fields(input)))}, conversationID)
 
 		// Get model response
 		startTime := time.Now()
-		fmt.Printf("%sAssistant: %s", colorGreen, colorReset)
-
-		// Stream the response
 		var fullResponse string
-		err := a.model.StreamResponse(ctx, messages, func(chunk string) error {
-			// Color tool usage in yellow
-			if strings.Contains(chunk, "[Tool:") {
-				fmt.Printf("%s%s%s", colorYellow, chunk, colorReset)
-			} else {
+
+		// Let the model call tools until it answers without one or hits the limit
+		for i := 0; i < maxToolIterations; i++ {
+			fmt.Printf("%sAssistant: %s", colorGreen, colorReset)
+			resp, err := a.model.StreamResponse(ctx, messages, func(chunk string) error {
 				fmt.Print(chunk)
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("error getting model response: %w", err)
 			}
-			fullResponse += chunk
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("error getting model response: %w", err)
-		}
+			fmt.Println()
+			fullResponse += resp.Content
 
-		// Check if the response contains tool usage
-		if strings.Contains(fullResponse, "<tool>") || strings.Contains(fullResponse, "[Tool:") || strings.Contains(fullResponse, "tool_calls") {
-			//
-			// Extract tool name and input
-			lines := strings.Split(fullResponse, "\n")
-			var toolName string
-			var toolInput string
+			// Add assistant response to history
+			assistantMsg := models.Message{
+				Role:      "assistant",
+				Content:   resp.Content,
+				ToolCalls: resp.ToolCalls,
+			}
+			messages = append(messages, assistantMsg)
+			a.save(assistantMsg, models.Usage{OutputTokens: int64(len(strings.Fields(resp.Content)))}, conversationID)
 
-			// Try to parse as XML tool format first
-			if toolStart := strings.Index(fullResponse, "<tool>"); toolStart != -1 {
-				if toolEnd := strings.Index(fullResponse, "</tool>"); toolEnd != -1 {
-					toolJSON := fullResponse[toolStart+6 : toolEnd]
-					var toolCall struct {
-						Name      string          `json:"name"`
-						Arguments json.RawMessage `json:"arguments"`
-					}
-					if err := json.Unmarshal([]byte(toolJSON), &toolCall); err == nil {
-
-						toolName = toolCall.Name
-						toolInput = string(toolCall.Arguments)
-					} else {
-
-					}
-				}
+			if len(resp.ToolCalls) == 0 {
+				break
 			}
 
-			// If XML parsing failed, try Ollama's tool_calls format if the response looks like JSON
-			if toolName == "" && strings.TrimSpace(fullResponse)[0] == '{' {
-				var toolCall struct {
-					Function struct {
-						Name      string          `json:"name"`
-						Arguments json.RawMessage `json:"arguments"`
-					} `json:"function"`
+			for _, call := range resp.ToolCalls {
+				result, err := a.executeTool(call)
+				if err != nil {
+					return fmt.Errorf("error executing tool %s: %w", call.Name, err)
 				}
-				if err := json.Unmarshal([]byte(fullResponse), &toolCall); err == nil {
 
-					toolName = toolCall.Function.Name
-					toolInput = string(toolCall.Function.Arguments)
-				} else {
-
+				// Add tool result to messages
+				toolMsg := models.Message{
+					Role:       "tool",
+					Content:    result,
+					ToolCallID: call.ID,
 				}
+				messages = append(messages, toolMsg)
+				a.save(toolMsg, models.Usage{}, conversationID)
 			}
 
-			// If both XML and Ollama parsing failed, try Claude's format
-			if toolName == "" {
-				for i, line := range lines {
-					if strings.HasPrefix(line, "[Tool:") {
-						toolName = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(line, "]"), "[Tool:"))
-						if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "Input:") {
-							toolInput = strings.TrimSpace(strings.TrimPrefix(lines[i+1], "Input:"))
-						}
-						break
-					}
-				}
-			}
-
-			if toolName != "" {
-				for _, tool := range a.tools {
-					if tool.GetName() == toolName {
-
-						// Start spinner in a goroutine
-						done := make(chan bool)
-						go func() {
-							i := 0
-							for {
-								select {
-								case <-done:
-									return
-								default:
-									fmt.Printf("\r%s%s%s", colorYellow, spinnerFrames[i], colorReset)
-									i = (i + 1) % len(spinnerFrames)
-									time.Sleep(100 * time.Millisecond)
-								}
-							}
-						}()
-
-						result, err := tool.Execute(json.RawMessage(toolInput))
-						done <- true    // Stop the spinner
-						fmt.Print("\r") // Clear the spinner line
-
-						if err != nil {
-							return fmt.Errorf("error executing tool %s: %w", toolName, err)
-						}
-
-						// Print tool result in yellow
-						fmt.Printf("%s<result>%s</result>%s\n", colorYellow, result, colorReset)
-
-						// Add tool result to messages
-						messages = append(messages, models.Message{
-							Role:    "assistant",
-							Content: fullResponse,
-						})
-						messages = append(messages, models.Message{
-							Role:    "user",
-							Content: fmt.Sprintf("<result>%s</result>", result),
-						})
-
-						// Get model's response to the tool result
-						fmt.Printf("%sAssistant: %s", colorGreen, colorReset)
-						err = a.model.StreamResponse(ctx, messages, func(chunk string) error {
-							// Color tool usage in yellow
-							if strings.Contains(chunk, "<tool>") || strings.Contains(chunk, "<result>") || strings.Contains(chunk, "[Tool:") || strings.Contains(chunk, "tool_calls") {
-								fmt.Printf("%s%s%s", colorYellow, chunk, colorReset)
-							} else {
-								fmt.Print(chunk)
-							}
-							fullResponse += chunk
-							return nil
-						})
-						if err != nil {
-							return fmt.Errorf("error getting model response to tool result: %w", err)
-						}
-						break
-					}
-				}
+			if i == maxToolIterations-1 {
+				fmt.Printf("%s[stopped after %d tool iterations]%s\n", colorYellow, maxToolIterations, colorReset)
 			}
 		}
 
@@ -266,7 +182,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.stats.TotalInputTokens += int64(inputTokens)
 			a.stats.TotalOutputTokens += int64(outputTokens)
 
-			fmt.Printf("\n\n%s[Stats] Response time: %v, Input tokens: %d, Output tokens: %d%s\n",
+			fmt.Printf("\n%s[Stats] Response time: %v, Input tokens: %d, Output tokens: %d%s\n",
 				colorYellow,
 				a.stats.LastResponseTime.Round(time.Millisecond),
 				int64(inputTokens),
@@ -274,23 +190,58 @@ func (a *Agent) Run(ctx context.Context) error {
 				colorReset)
 		}
 
-		// Add assistant response to history
-		assistantMsg := models.Message{
-			Role:    "assistant",
-			Content: fullResponse,
-		}
-		messages = append(messages, assistantMsg)
-
-		// Save assistant message with the same conversation ID
-		if err := a.storage.SaveMessage(assistantMsg, a.model.GetName(), models.Usage{
-			OutputTokens: int64(len(strings.Fields(fullResponse))),
-		}, conversationID); err != nil {
-			fmt.Printf("Warning: failed to save assistant message: %v\n", err)
-		}
-
 		// Add a newline before the next user input
 		fmt.Println()
 	}
+}
+
+// save records a message in chat storage, warning rather than failing on error
+func (a *Agent) save(msg models.Message, usage models.Usage, conversationID string) {
+	if err := a.storage.SaveMessage(msg, a.model.GetName(), usage, conversationID); err != nil {
+		fmt.Printf("Warning: failed to save %s message: %v\n", msg.Role, err)
+	}
+}
+
+// executeTool runs one tool call, showing a spinner while it works.
+// Unknown or malformed calls produce an error message for the model rather than a Go error,
+// because every tool call must be answered for the conversation to stay valid.
+func (a *Agent) executeTool(call models.ToolCall) (string, error) {
+	fmt.Printf("%s[Tool: %s] %s%s\n", colorYellow, call.Name, string(call.Input), colorReset)
+
+	if call.Name == "" {
+		return `error: malformed tool call, expected <tool>{"name": "...", "arguments": {...}}</tool>`, nil
+	}
+	tool, ok := a.toolsByName[call.Name]
+	if !ok {
+		return fmt.Sprintf("error: unknown tool %q", call.Name), nil
+	}
+
+	// Start spinner in a goroutine
+	done := make(chan bool)
+	go func() {
+		i := 0
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				fmt.Printf("\r%s%s%s", colorYellow, spinnerFrames[i], colorReset)
+				i = (i + 1) % len(spinnerFrames)
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}()
+
+	result, err := tool.Execute(call.Input)
+	done <- true    // Stop the spinner
+	fmt.Print("\r") // Clear the spinner line
+	if err != nil {
+		return "", err
+	}
+
+	// Print tool result in yellow
+	fmt.Printf("%s<result>%s</result>%s\n", colorYellow, result, colorReset)
+	return result, nil
 }
 
 // buildSystemPrompt describes the available tools in the format the model family expects
