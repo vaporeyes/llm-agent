@@ -13,9 +13,10 @@ import (
 )
 
 type OllamaModel struct {
-	config ModelConfig
-	client *http.Client
-	tools  []tools.Tool
+	config  ModelConfig
+	client  *http.Client
+	baseURL string
+	tools   []toolParam
 }
 
 type ollamaRequest struct {
@@ -71,8 +72,9 @@ func NewOllamaModel(config ModelConfig) (*OllamaModel, error) {
 	}
 
 	return &OllamaModel{
-		config: config,
-		client: &http.Client{},
+		config:  config,
+		client:  &http.Client{},
+		baseURL: "http://localhost:11434",
 	}, nil
 }
 
@@ -93,43 +95,12 @@ func (m *OllamaModel) StreamResponse(ctx context.Context, messages []Message, on
 		}
 	}
 
-	// Convert tools to Ollama format
-	var ollamaTools []toolParam
-	if m.tools != nil {
-		ollamaTools = make([]toolParam, len(m.tools))
-		for i, tool := range m.tools {
-			// Parse the input schema
-			var schema map[string]interface{}
-			if err := json.Unmarshal(tool.GetInputSchema(), &schema); err != nil {
-				return nil, fmt.Errorf("failed to parse tool schema: %w", err)
-			}
-
-			// Create parameters object in Ollama's format
-			parameters := map[string]interface{}{
-				"type":       "object",
-				"properties": schema["properties"],
-			}
-			if required, ok := schema["required"].([]interface{}); ok {
-				parameters["required"] = required
-			}
-
-			ollamaTools[i] = toolParam{
-				Type: "function",
-				Function: functionParam{
-					Name:        tool.GetName(),
-					Description: tool.GetDescription(),
-					Parameters:  parameters,
-				},
-			}
-		}
-	}
-
 	// Prepare request
 	reqBody := ollamaRequest{
 		Model:    m.config.ModelName,
 		Messages: ollamaMessages,
 		Stream:   true,
-		Tools:    ollamaTools,
+		Tools:    m.tools,
 		Options: map[string]interface{}{
 			"temperature": m.config.Temperature,
 			"num_predict": m.config.MaxTokens,
@@ -144,7 +115,7 @@ func (m *OllamaModel) StreamResponse(ctx context.Context, messages []Message, on
 	//
 
 	// Make request to Ollama
-	req, err := http.NewRequestWithContext(ctx, "POST", "http://localhost:11434/api/chat", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", m.baseURL+"/api/chat", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -161,15 +132,8 @@ func (m *OllamaModel) StreamResponse(ctx context.Context, messages []Message, on
 		return nil, fmt.Errorf("ollama API returned status code: %d", resp.StatusCode)
 	}
 
-	// Read the raw response for debugging
-	rawBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Create a new reader with the raw body
-	reader := bytes.NewReader(rawBody)
-	decoder := json.NewDecoder(reader)
+	// Decode chunks as they arrive so output streams to the caller
+	decoder := json.NewDecoder(resp.Body)
 
 	out := &Response{}
 	for {
@@ -242,7 +206,38 @@ func parseTextToolCall(content string) (ToolCall, bool) {
 }
 
 func (m *OllamaModel) SetTools(tools []tools.Tool) error {
-	m.tools = tools
+	// Convert tools to Ollama format
+	var ollamaTools []toolParam
+	if tools != nil {
+		ollamaTools = make([]toolParam, len(tools))
+		for i, tool := range tools {
+			// Parse the input schema
+			var schema map[string]interface{}
+			if err := json.Unmarshal(tool.GetInputSchema(), &schema); err != nil {
+				return fmt.Errorf("failed to parse tool schema: %w", err)
+			}
+
+			// Create parameters object in Ollama's format
+			parameters := map[string]interface{}{
+				"type":       "object",
+				"properties": schema["properties"],
+			}
+			if required, ok := schema["required"].([]interface{}); ok {
+				parameters["required"] = required
+			}
+
+			ollamaTools[i] = toolParam{
+				Type: "function",
+				Function: functionParam{
+					Name:        tool.GetName(),
+					Description: tool.GetDescription(),
+					Parameters:  parameters,
+				},
+			}
+		}
+	}
+
+	m.tools = ollamaTools
 	return nil
 }
 

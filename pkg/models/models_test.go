@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"llm-agent/pkg/tools"
 
@@ -160,5 +161,56 @@ func TestClaudeRequestUsesConfigAndToolDescriptions(t *testing.T) {
 	toolsJSON, _ := json.Marshal(body["tools"])
 	if !strings.Contains(string(toolsJSON), `"description":"Read the contents`) {
 		t.Errorf("tool description missing: %s", toolsJSON)
+	}
+}
+
+func TestOllamaStreamsBeforeResponseCompletes(t *testing.T) {
+	firstSeen := make(chan struct{})
+	var reqBody ollamaRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		fmt.Fprintln(w, `{"message":{"role":"assistant","content":"hel"},"done":false}`)
+		w.(http.Flusher).Flush()
+		// Hold the response open until the client has handled the first chunk
+		select {
+		case <-firstSeen:
+		case <-time.After(2 * time.Second):
+			t.Error("first chunk was not delivered before the response completed")
+		}
+		fmt.Fprintln(w, `{"message":{"role":"assistant","content":"lo","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"a"}}},{"function":{"name":"list_dir","arguments":{"path":"."}}}]},"done":false}`)
+		fmt.Fprintln(w, `{"message":{"role":"assistant","content":""},"done":true,"prompt_eval_count":9,"eval_count":4}`)
+	}))
+	defer srv.Close()
+
+	m, _ := NewOllamaModel(ModelConfig{ModelName: "llama-test"})
+	m.baseURL = srv.URL
+	if err := m.SetTools([]tools.Tool{tools.NewReadFileTool()}); err != nil {
+		t.Fatal(err)
+	}
+
+	chunks := 0
+	resp, err := m.StreamResponse(context.Background(), []Message{{Role: "user", Content: "hi"}}, func(string) error {
+		chunks++
+		if chunks == 1 {
+			close(firstSeen)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Content != "hello" {
+		t.Errorf("content = %q", resp.Content)
+	}
+	if len(resp.ToolCalls) != 2 || resp.ToolCalls[1].Name != "list_dir" || resp.ToolCalls[0].ID == resp.ToolCalls[1].ID {
+		t.Errorf("tool calls = %+v", resp.ToolCalls)
+	}
+	if resp.Usage.InputTokens != 9 || resp.Usage.OutputTokens != 4 {
+		t.Errorf("usage = %+v", resp.Usage)
+	}
+	if len(reqBody.Tools) != 1 || reqBody.Tools[0].Function.Name != "read_file" {
+		t.Errorf("request tools = %+v", reqBody.Tools)
 	}
 }
