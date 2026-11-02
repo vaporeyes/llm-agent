@@ -327,3 +327,10 @@ func TestRunTotalsProviderUsage(t *testing.T) {
 		t.Errorf("turns = %d, total = %v, last = %v", a.stats.Turns, a.stats.TotalResponseTime, a.stats.LastResponseTime)
 	}
 }
+
+func TestSanitizeForTerminalStripsEscapes(t *testing.T) {
+	in := "ok\x1b]52;c;ZXZpbA==\x07 \x1b[2J\r\u009b31m line\n\ttab é"
+	if got, want := sanitizeForTerminal(in), "ok]52;c;ZXZpbA== [2J31m line\n\ttab é"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

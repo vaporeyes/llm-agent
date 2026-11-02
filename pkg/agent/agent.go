@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"llm-agent/pkg/models"
 	"llm-agent/pkg/storage"
@@ -139,7 +140,7 @@ turns:
 		for i := 0; i < maxToolIterations; i++ {
 			fmt.Printf("%sAssistant: %s", colorGreen, colorReset)
 			resp, err := a.model.StreamResponse(ctx, messages, func(chunk string) error {
-				fmt.Print(chunk)
+				fmt.Print(sanitizeForTerminal(chunk))
 				return nil
 			})
 			if err != nil {
@@ -240,7 +241,7 @@ func (a *Agent) save(msg models.Message, usage models.Usage, conversationID stri
 // because every tool call must be answered for the conversation to stay valid
 // and the model can often recover, for example by fixing a mistyped path.
 func (a *Agent) executeTool(call models.ToolCall) string {
-	fmt.Printf("%s[Tool: %s] %s%s\n", colorYellow, call.Name, string(call.Input), colorReset)
+	fmt.Printf("%s[Tool: %s] %s%s\n", colorYellow, sanitizeForTerminal(call.Name), sanitizeForTerminal(string(call.Input)), colorReset)
 
 	if call.Name == "" {
 		return `error: malformed tool call, expected <tool>{"name": "...", "arguments": {...}}</tool>`
@@ -279,7 +280,7 @@ func (a *Agent) executeTool(call models.ToolCall) string {
 	}
 
 	// Print tool result in yellow
-	fmt.Printf("%s<result>%s</result>%s\n", colorYellow, result, colorReset)
+	fmt.Printf("%s<result>%s</result>%s\n", colorYellow, sanitizeForTerminal(result), colorReset)
 	return result
 }
 
@@ -287,6 +288,18 @@ func (a *Agent) executeTool(call models.ToolCall) string {
 func runTool(tool tools.Tool, input json.RawMessage, stop func()) (string, error) {
 	defer stop()
 	return tool.Execute(input)
+}
+
+// sanitizeForTerminal removes control characters other than newline and tab from
+// text that came from the model or a file, so it cannot inject escape sequences
+// that rewrite the screen, set the window title, or write to the clipboard
+func sanitizeForTerminal(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // buildSystemPrompt describes the available tools in the format the model family expects
