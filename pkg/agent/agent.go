@@ -40,6 +40,8 @@ type Statistics struct {
 	TotalOutputTokens int64
 	StartTime         time.Time
 	LastResponseTime  time.Duration
+	TotalResponseTime time.Duration
+	Turns             int64
 }
 
 // Agent represents a chat agent that can interact with an LLM and use tools
@@ -126,11 +128,12 @@ turns:
 		messages = append(messages, userMsg)
 
 		// Save user message
-		a.save(userMsg, models.Usage{InputTokens: int64(len(strings.Fields(input)))}, conversationID)
+		// Token usage is reported by the provider with the response, not per user message
+		a.save(userMsg, models.Usage{}, conversationID)
 
 		// Get model response
 		startTime := time.Now()
-		var fullResponse string
+		var turnUsage models.Usage
 
 		// Let the model call tools until it answers without one or hits the limit
 		for i := 0; i < maxToolIterations; i++ {
@@ -149,7 +152,8 @@ turns:
 				continue turns
 			}
 			fmt.Println()
-			fullResponse += resp.Content
+			turnUsage.InputTokens += resp.Usage.InputTokens
+			turnUsage.OutputTokens += resp.Usage.OutputTokens
 
 			// Add assistant response to history
 			assistantMsg := models.Message{
@@ -158,7 +162,7 @@ turns:
 				ToolCalls: resp.ToolCalls,
 			}
 			messages = append(messages, assistantMsg)
-			a.save(assistantMsg, models.Usage{OutputTokens: int64(len(strings.Fields(resp.Content)))}, conversationID)
+			a.save(assistantMsg, resp.Usage, conversationID)
 
 			if len(resp.ToolCalls) == 0 {
 				break
@@ -184,18 +188,16 @@ turns:
 
 		// Update statistics
 		a.stats.LastResponseTime = time.Since(startTime)
+		a.stats.TotalResponseTime += a.stats.LastResponseTime
+		a.stats.Turns++
+		a.stats.TotalInputTokens += turnUsage.InputTokens
+		a.stats.TotalOutputTokens += turnUsage.OutputTokens
 		if a.showStats {
-			// Estimate tokens for streaming response
-			inputTokens := float64(len(strings.Fields(input))) * 1.3 // Rough estimate
-			outputTokens := float64(len(strings.Fields(fullResponse))) * 1.3
-			a.stats.TotalInputTokens += int64(inputTokens)
-			a.stats.TotalOutputTokens += int64(outputTokens)
-
 			fmt.Printf("\n%s[Stats] Response time: %v, Input tokens: %d, Output tokens: %d%s\n",
 				colorYellow,
 				a.stats.LastResponseTime.Round(time.Millisecond),
-				int64(inputTokens),
-				int64(outputTokens),
+				turnUsage.InputTokens,
+				turnUsage.OutputTokens,
 				colorReset)
 		}
 
@@ -339,6 +341,10 @@ func (a *Agent) PrintStats() {
 	fmt.Printf("Total runtime: %v\n", totalTime.Round(time.Second))
 	fmt.Printf("Total input tokens: %d\n", a.stats.TotalInputTokens)
 	fmt.Printf("Total output tokens: %d\n", a.stats.TotalOutputTokens)
-	fmt.Printf("Average response time: %v\n", a.stats.LastResponseTime.Round(time.Millisecond))
+	var average time.Duration
+	if a.stats.Turns > 0 {
+		average = a.stats.TotalResponseTime / time.Duration(a.stats.Turns)
+	}
+	fmt.Printf("Average response time: %v\n", average.Round(time.Millisecond))
 	fmt.Printf("==================\n")
 }

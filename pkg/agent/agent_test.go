@@ -309,3 +309,21 @@ func TestToolPanicStillStopsSpinner(t *testing.T) {
 		t.Fatal("stop was not called after panic")
 	}
 }
+
+func TestRunTotalsProviderUsage(t *testing.T) {
+	m := &fakeModel{name: "fake", responses: []*models.Response{
+		{ToolCalls: []models.ToolCall{{ID: "c1", Name: "alpha", Input: json.RawMessage(`{}`)}}, Usage: models.Usage{InputTokens: 100, OutputTokens: 10}},
+		{Content: "a", Usage: models.Usage{InputTokens: 120, OutputTokens: 5}},
+		{Content: "b", Usage: models.Usage{InputTokens: 50, OutputTokens: 2}},
+	}}
+	a := newTestAgent(t, m, "one", "two")
+	if err := a.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if a.stats.TotalInputTokens != 270 || a.stats.TotalOutputTokens != 17 {
+		t.Errorf("totals = %d/%d, want 270/17", a.stats.TotalInputTokens, a.stats.TotalOutputTokens)
+	}
+	if a.stats.Turns != 2 || a.stats.TotalResponseTime < a.stats.LastResponseTime {
+		t.Errorf("turns = %d, total = %v, last = %v", a.stats.Turns, a.stats.TotalResponseTime, a.stats.LastResponseTime)
+	}
+}
