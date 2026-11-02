@@ -1,3 +1,5 @@
+// ABOUTME: search_file tool: returns lines in a workspace file matching a string or regex.
+// ABOUTME: Paths are confined to the workspace root.
 package tools
 
 import (

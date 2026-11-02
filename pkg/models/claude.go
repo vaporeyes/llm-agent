@@ -1,3 +1,5 @@
+// ABOUTME: Anthropic Claude provider implementing the Model interface via the Messages API.
+// ABOUTME: Maps chat roles, tool_use, and tool_result blocks to and from provider-neutral types.
 package models
 
 import (

@@ -1,3 +1,5 @@
+// ABOUTME: Interactive chat loop that streams model replies and executes requested tool calls.
+// ABOUTME: Tracks usage statistics and records every message to chat storage.
 package agent
 
 import (

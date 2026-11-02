@@ -1,3 +1,5 @@
+// ABOUTME: summarize_file tool: gives a short overview of a workspace file.
+// ABOUTME: Go files are parsed exactly; other types use heuristics on the first 1000 bytes.
 package tools
 
 import (

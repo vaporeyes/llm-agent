@@ -1,3 +1,5 @@
+// ABOUTME: Persists chat history as append-only JSON Lines, one message per line.
+// ABOUTME: Records conversation IDs, tool calls, and provider token usage.
 package storage
 
 import (

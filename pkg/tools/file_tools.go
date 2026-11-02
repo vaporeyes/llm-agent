@@ -1,3 +1,5 @@
+// ABOUTME: File tools for reading, listing, and editing files inside the workspace.
+// ABOUTME: Also defines shared size limits and JSON schema generation for tool inputs.
 package tools
 
 import (

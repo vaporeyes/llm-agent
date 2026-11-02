@@ -1,3 +1,5 @@
+// ABOUTME: Command-line entry point: parses flags, builds the model and tools, and runs the agent.
+// ABOUTME: Handles SIGINT/SIGTERM by cancelling the agent context and printing stats on exit.
 package main
 
 import (

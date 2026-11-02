@@ -1,3 +1,5 @@
+// ABOUTME: Provider-neutral message, tool call, and response types plus the Model interface.
+// ABOUTME: Also holds the HTTP client configuration shared by all providers.
 package models
 
 import (

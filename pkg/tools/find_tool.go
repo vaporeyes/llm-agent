@@ -1,3 +1,5 @@
+// ABOUTME: find_file tool: locates files in the workspace whose relative path matches a glob.
+// ABOUTME: Stops after a bounded number of matches.
 package tools
 
 import (

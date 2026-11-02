@@ -1,3 +1,5 @@
+// ABOUTME: Ollama provider implementing the Model interface against a local /api/chat endpoint.
+// ABOUTME: Supports native tool calls and a <tool> JSON text fallback for other models.
 package models
 
 import (
@@ -120,8 +122,6 @@ func (m *OllamaModel) StreamResponse(ctx context.Context, messages []Message, on
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	//
-
 	// Make request to Ollama
 	req, err := http.NewRequestWithContext(ctx, "POST", m.baseURL+"/api/chat", bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -133,7 +133,6 @@ func (m *OllamaModel) StreamResponse(ctx context.Context, messages []Message, on
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request to Ollama: %w", err)
 	}
-	//
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {

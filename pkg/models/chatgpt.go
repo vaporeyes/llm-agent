@@ -1,3 +1,5 @@
+// ABOUTME: OpenAI ChatGPT provider implementing the Model interface over streaming completions.
+// ABOUTME: Reassembles streamed tool call fragments into structured ToolCalls.
 package models
 
 import (
