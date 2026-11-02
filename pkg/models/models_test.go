@@ -214,3 +214,16 @@ func TestOllamaStreamsBeforeResponseCompletes(t *testing.T) {
 		t.Errorf("request tools = %+v", reqBody.Tools)
 	}
 }
+
+func TestOllamaErrorIncludesResponseBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"model \"nope\" not found, try pulling it first"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+	m, _ := NewOllamaModel(ModelConfig{ModelName: "nope"})
+	m.baseURL = srv.URL
+	_, err := m.StreamResponse(context.Background(), []Message{{Role: "user", Content: "hi"}}, func(string) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "404") || !strings.Contains(err.Error(), "not found, try pulling it first") {
+		t.Fatalf("err = %v", err)
+	}
+}

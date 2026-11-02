@@ -129,7 +129,9 @@ func (m *OllamaModel) StreamResponse(ctx context.Context, messages []Message, on
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ollama API returned status code: %d", resp.StatusCode)
+		// Include the start of the body, which explains errors such as an unknown model
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("ollama API returned status code %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	// Decode chunks as they arrive so output streams to the caller

@@ -191,6 +191,10 @@ func generateSchema[T any]() json.RawMessage {
 	}
 	var v T
 	schema := reflector.Reflect(v)
-	schemaBytes, _ := json.Marshal(schema)
+	schemaBytes, err := json.Marshal(schema)
+	if err != nil {
+		// Schemas are reflected from static types at startup, so this is a programming error
+		panic(fmt.Sprintf("failed to marshal schema for %T: %v", v, err))
+	}
 	return schemaBytes
 }
