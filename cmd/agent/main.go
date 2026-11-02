@@ -15,6 +15,9 @@ import (
 	"llm-agent/pkg/tools"
 )
 
+// maxInputBytes is the longest single line of user input accepted
+const maxInputBytes = 4 * 1024 * 1024
+
 func main() {
 	showStats := flag.Bool("stats", false, "Show statistics when the program exits")
 	modelType := flag.String("model", "claude", "Model to use (claude, chatgpt, ollama)")
@@ -73,8 +76,13 @@ func main() {
 
 	// Initialize user input
 	scanner := bufio.NewScanner(os.Stdin)
+	// Allow long pasted input; the default 64 KiB limit ended the session silently
+	scanner.Buffer(make([]byte, 0, 64*1024), maxInputBytes)
 	getUserInput := func() (string, bool) {
 		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
+			}
 			return "", false
 		}
 		return scanner.Text(), true

@@ -66,6 +66,8 @@ func searchFile(input json.RawMessage) (string, error) {
 	// Search through the file
 	var matches []string
 	scanner := bufio.NewScanner(file)
+	// Allow long lines such as minified files, up to the read limit
+	scanner.Buffer(make([]byte, 0, 64*1024), maxReadBytes)
 	lineNum := 1
 	for scanner.Scan() {
 		line := scanner.Text()

@@ -91,3 +91,15 @@ func TestListFilesStopsAtEntryLimit(t *testing.T) {
 		t.Fatalf("got %d entries, last %q", len(files), files[len(files)-1])
 	}
 }
+
+func TestSearchFileHandlesLongLines(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "min.js", "short\n"+strings.Repeat("z", 100*1024)+"needle\n")
+	out, err := NewSearchFileTool().Execute(mustInput(t, map[string]any{"path": filepath.Join(root, "min.js"), "pattern": "needle"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, "Found 1 matches:\nLine 2:") {
+		t.Fatalf("out = %.80q", out)
+	}
+}
