@@ -25,4 +25,4 @@ go.work.sum
 .env
 
 # dont commit the default chat_history
-chat_history.json
+chat_history.json*

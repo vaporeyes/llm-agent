@@ -20,7 +20,7 @@ func main() {
 	ollamaModel := flag.String("ollama-model", "llama2", "Model to use with Ollama (e.g., llama2, mistral)")
 	claudeModel := flag.String("claude-model", "claude-sonnet-5-5", "Model to use with Claude (e.g., claude-sonnet-5-5, claude-opus-5-5)")
 	chatgptModel := flag.String("chatgpt-model", "gpt-3.5-turbo", "Model to use with ChatGPT (e.g., gpt-3.5-turbo, gpt-4)")
-	storagePath := flag.String("storage", "chat_history.json", "Path to store chat history")
+	storagePath := flag.String("storage", "chat_history.jsonl", "Path to store chat history (JSON Lines)")
 	workspaceRoot := flag.String("workspace", ".", "Workspace root directory")
 	flag.Parse()
 
