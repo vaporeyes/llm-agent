@@ -97,6 +97,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		Content: buildSystemPrompt(a.model.GetName(), a.tools),
 	}}
 
+	// One conversation ID links every message in this session
+	conversationID := uuid.New().String()
+
 	for {
 		// Get user input
 		fmt.Printf("%sYou: %s", colorBlue, colorReset)
@@ -108,9 +111,6 @@ func (a *Agent) Run(ctx context.Context) error {
 		if input == "" {
 			continue
 		}
-
-		// Generate a new conversation ID for this exchange
-		conversationID := uuid.New().String()
 
 		// Add user message to history
 		userMsg := models.Message{

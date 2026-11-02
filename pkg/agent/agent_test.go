@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -175,5 +176,35 @@ func TestNewAgentRegistersProvidedTools(t *testing.T) {
 	}
 	if len(a.tools) != 1 {
 		t.Fatalf("agent tools = %d, want 1", len(a.tools))
+	}
+}
+
+func TestRunUsesOneConversationIDPerSession(t *testing.T) {
+	m := &fakeModel{name: "fake"}
+	path := filepath.Join(t.TempDir(), "h.jsonl")
+	a, err := NewAgent(m, inputs("one", "two"), nil, false, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for _, line := range lines {
+		var rec struct {
+			ConversationID string `json:"conversation_id"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatal(err)
+		}
+		ids[rec.ConversationID] = true
+	}
+	if len(lines) != 4 || len(ids) != 1 {
+		t.Fatalf("%d records with %d conversation IDs, want 4 records sharing 1", len(lines), len(ids))
 	}
 }
