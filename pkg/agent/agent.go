@@ -1,3 +1,5 @@
+// ABOUTME: Interactive chat loop that streams model replies and executes requested tool calls.
+// ABOUTME: Tracks usage statistics and records every message to chat storage.
 package agent
 
 import (
@@ -6,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"llm-agent/pkg/models"
 	"llm-agent/pkg/storage"
@@ -28,6 +31,9 @@ const (
 	colorOrange = "\033[38;5;208m" // Light orange for version and model info
 )
 
+// maxToolIterations bounds how many model calls one user message can trigger
+const maxToolIterations = 10
+
 // Spinner animation frames
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
@@ -37,41 +43,48 @@ type Statistics struct {
 	TotalOutputTokens int64
 	StartTime         time.Time
 	LastResponseTime  time.Duration
+	TotalResponseTime time.Duration
+	Turns             int64
 }
 
 // Agent represents a chat agent that can interact with an LLM and use tools
 type Agent struct {
-	model         models.Model
-	getUserInput  func() (string, bool)
-	tools         []tools.Tool
-	showStats     bool
-	stats         Statistics
-	storage       *storage.ChatStorage
-	workspaceRoot string
+	model        models.Model
+	getUserInput func() (string, bool)
+	tools        []tools.Tool
+	toolsByName  map[string]tools.Tool
+	showStats    bool
+	stats        Statistics
+	storage      *storage.ChatStorage
 }
 
 // NewAgent creates a new agent with the given model and tools
-func NewAgent(model models.Model, getUserInput func() (string, bool), tools []tools.Tool, showStats bool, storagePath string, workspaceRoot string) (*Agent, error) {
+func NewAgent(model models.Model, getUserInput func() (string, bool), agentTools []tools.Tool, showStats bool, storagePath string) (*Agent, error) {
 	chatStorage, err := storage.NewChatStorage(storagePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize chat storage: %w", err)
 	}
 
 	// Set tools for the model
-	if err := model.SetTools(tools); err != nil {
+	if err := model.SetTools(agentTools); err != nil {
 		return nil, fmt.Errorf("failed to set tools: %w", err)
+	}
+
+	toolsByName := make(map[string]tools.Tool, len(agentTools))
+	for _, tool := range agentTools {
+		toolsByName[tool.GetName()] = tool
 	}
 
 	return &Agent{
 		model:        model,
 		getUserInput: getUserInput,
-		tools:        tools,
+		tools:        agentTools,
+		toolsByName:  toolsByName,
 		showStats:    showStats,
 		stats: Statistics{
 			StartTime: time.Now(),
 		},
-		storage:       chatStorage,
-		workspaceRoot: workspaceRoot,
+		storage: chatStorage,
 	}, nil
 }
 
@@ -84,18 +97,223 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.model.GetName(),
 		colorReset)
 
-	var messages []models.Message
-
 	// Add system message to describe available tools
-	toolDescriptions := make([]string, len(a.tools))
-	for i, tool := range a.tools {
+	messages := []models.Message{{
+		Role:    "system",
+		Content: buildSystemPrompt(a.model.GetName(), a.tools),
+	}}
+
+	// One conversation ID links every message in this session
+	conversationID := uuid.New().String()
+
+turns:
+	for {
+		// Get user input
+		fmt.Printf("%sYou: %s", colorBlue, colorReset)
+		input, ok, err := a.readInput(ctx)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+
+		if input == "" {
+			continue
+		}
+
+		// Add user message to history, remembering where this turn starts
+		turnStart := len(messages)
+		userMsg := models.Message{
+			Role:    "user",
+			Content: input,
+		}
+		messages = append(messages, userMsg)
+
+		// Save user message
+		// Token usage is reported by the provider with the response, not per user message
+		a.save(userMsg, models.Usage{}, conversationID)
+
+		// Get model response
+		startTime := time.Now()
+		var turnUsage models.Usage
+
+		// Let the model call tools until it answers without one or hits the limit
+		for i := 0; i < maxToolIterations; i++ {
+			fmt.Printf("%sAssistant: %s", colorGreen, colorReset)
+			resp, err := a.model.StreamResponse(ctx, messages, func(chunk string) error {
+				fmt.Print(sanitizeForTerminal(chunk))
+				return nil
+			})
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				// Drop the unanswered turn so the history stays valid for the next request
+				fmt.Printf("\nError getting model response: %v\n\n", err)
+				messages = messages[:turnStart]
+				continue turns
+			}
+			fmt.Println()
+			turnUsage.InputTokens += resp.Usage.InputTokens
+			turnUsage.OutputTokens += resp.Usage.OutputTokens
+
+			// Add assistant response to history
+			assistantMsg := models.Message{
+				Role:      "assistant",
+				Content:   resp.Content,
+				ToolCalls: resp.ToolCalls,
+			}
+			messages = append(messages, assistantMsg)
+			a.save(assistantMsg, resp.Usage, conversationID)
+
+			if len(resp.ToolCalls) == 0 {
+				break
+			}
+
+			for _, call := range resp.ToolCalls {
+				result := a.executeTool(call)
+
+				// Add tool result to messages
+				toolMsg := models.Message{
+					Role:       "tool",
+					Content:    result,
+					ToolCallID: call.ID,
+				}
+				messages = append(messages, toolMsg)
+				a.save(toolMsg, models.Usage{}, conversationID)
+			}
+
+			if i == maxToolIterations-1 {
+				fmt.Printf("%s[stopped after %d tool iterations]%s\n", colorYellow, maxToolIterations, colorReset)
+			}
+		}
+
+		// Update statistics
+		a.stats.LastResponseTime = time.Since(startTime)
+		a.stats.TotalResponseTime += a.stats.LastResponseTime
+		a.stats.Turns++
+		a.stats.TotalInputTokens += turnUsage.InputTokens
+		a.stats.TotalOutputTokens += turnUsage.OutputTokens
+		if a.showStats {
+			fmt.Printf("\n%s[Stats] Response time: %v, Input tokens: %d, Output tokens: %d%s\n",
+				colorYellow,
+				a.stats.LastResponseTime.Round(time.Millisecond),
+				turnUsage.InputTokens,
+				turnUsage.OutputTokens,
+				colorReset)
+		}
+
+		// Add a newline before the next user input
+		fmt.Println()
+	}
+}
+
+// readInput waits for the next line of user input or for ctx to be cancelled.
+// Blocking reads such as bufio.Scanner cannot observe ctx, so the read runs in a
+// goroutine; on cancellation it stays blocked on stdin until the process exits,
+// and the buffered channel lets it finish without a receiver.
+func (a *Agent) readInput(ctx context.Context) (string, bool, error) {
+	type line struct {
+		text string
+		ok   bool
+	}
+	lines := make(chan line, 1)
+	go func() {
+		text, ok := a.getUserInput()
+		lines <- line{text, ok}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", false, ctx.Err()
+	case l := <-lines:
+		return l.text, l.ok, nil
+	}
+}
+
+// save records a message in chat storage, warning rather than failing on error
+func (a *Agent) save(msg models.Message, usage models.Usage, conversationID string) {
+	if err := a.storage.SaveMessage(msg, a.model.GetName(), usage, conversationID); err != nil {
+		fmt.Printf("Warning: failed to save %s message: %v\n", msg.Role, err)
+	}
+}
+
+// executeTool runs one tool call, showing a spinner while it works.
+// Failures are returned as an error message for the model rather than a Go error,
+// because every tool call must be answered for the conversation to stay valid
+// and the model can often recover, for example by fixing a mistyped path.
+func (a *Agent) executeTool(call models.ToolCall) string {
+	fmt.Printf("%s[Tool: %s] %s%s\n", colorYellow, sanitizeForTerminal(call.Name), sanitizeForTerminal(string(call.Input)), colorReset)
+
+	if call.Name == "" {
+		return `error: malformed tool call, expected <tool>{"name": "...", "arguments": {...}}</tool>`
+	}
+	tool, ok := a.toolsByName[call.Name]
+	if !ok {
+		return fmt.Sprintf("error: unknown tool %q", call.Name)
+	}
+
+	// Start spinner in a goroutine; stopSpinner waits for it to exit so it
+	// cannot write over the result, and runs even if the tool panics
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for i := 0; ; i = (i + 1) % len(spinnerFrames) {
+			fmt.Printf("\r%s%s%s", colorYellow, spinnerFrames[i], colorReset)
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	stopSpinner := func() {
+		close(done) // Stop the spinner
+		<-finished
+		fmt.Print("\r") // Clear the spinner line
+	}
+
+	result, err := runTool(tool, call.Input, stopSpinner)
+	if err != nil {
+		result = fmt.Sprintf("error: %v", err)
+	}
+
+	// Print tool result in yellow
+	fmt.Printf("%s<result>%s</result>%s\n", colorYellow, sanitizeForTerminal(result), colorReset)
+	return result
+}
+
+// runTool executes tool and always calls stop afterwards, including on panic
+func runTool(tool tools.Tool, input json.RawMessage, stop func()) (string, error) {
+	defer stop()
+	return tool.Execute(input)
+}
+
+// sanitizeForTerminal removes control characters other than newline and tab from
+// text that came from the model or a file, so it cannot inject escape sequences
+// that rewrite the screen, set the window title, or write to the clipboard
+func sanitizeForTerminal(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// buildSystemPrompt describes the available tools in the format the model family expects
+func buildSystemPrompt(modelName string, agentTools []tools.Tool) string {
+	toolDescriptions := make([]string, len(agentTools))
+	for i, tool := range agentTools {
 		toolDescriptions[i] = fmt.Sprintf("- %s: %s", tool.GetName(), tool.GetDescription())
 	}
 
-	var systemMessage string
-	baseModelType := strings.Split(a.model.GetName(), "-")[0]
+	baseModelType := strings.Split(modelName, "-")[0]
 	if baseModelType == "ollama" {
-		systemMessage = fmt.Sprintf(`<system>
+		return fmt.Sprintf(`<system>
 You are a helpful AI assistant with access to the following tools:
 
 %s
@@ -119,232 +337,12 @@ You are a helpful AI assistant with access to the following tools:
 
 Remember that you're running locally with limited resources, so be efficient with your reasoning.
 </system>`, strings.Join(toolDescriptions, "\n"))
-	} else {
-		systemMessage = fmt.Sprintf(`You are a helpful AI assistant with access to the following tools:
+	}
+	return fmt.Sprintf(`You are a helpful AI assistant with access to the following tools:
 
 %s
 
 When a user asks you to perform a task that can be done using these tools, you should use them. Always explain what you're doing and show the results of each tool usage. If a user asks a question that is not related to tool usage, answer the question as normal.`, strings.Join(toolDescriptions, "\n"))
-	}
-	messages = append(messages, models.Message{
-		Role:    "system",
-		Content: systemMessage,
-	})
-
-	// Initialize tools
-	a.tools = []tools.Tool{
-		tools.NewReadFileTool(),
-		tools.NewListDirTool(a.workspaceRoot),
-		tools.NewSearchFileTool(),
-		tools.NewSummarizeFileTool(a.workspaceRoot),
-	}
-
-	// Set tools for the model
-	if err := a.model.SetTools(a.tools); err != nil {
-		return fmt.Errorf("failed to set tools: %w", err)
-	}
-
-	for {
-		// Get user input
-		fmt.Printf("%sYou: %s", colorBlue, colorReset)
-		input, ok := a.getUserInput()
-		if !ok {
-			return nil
-		}
-
-		if input == "" {
-			continue
-		}
-
-		// Generate a new conversation ID for this exchange
-		conversationID := uuid.New().String()
-
-		// Add user message to history
-		userMsg := models.Message{
-			Role:    "user",
-			Content: input,
-		}
-		messages = append(messages, userMsg)
-
-		// Save user message
-		if err := a.storage.SaveMessage(userMsg, a.model.GetName(), models.Usage{
-			InputTokens: int64(len(strings.Fields(input))),
-		}, conversationID); err != nil {
-			fmt.Printf("Warning: failed to save user message: %v\n", err)
-		}
-
-		// Get model response
-		startTime := time.Now()
-		fmt.Printf("%sAssistant: %s", colorGreen, colorReset)
-
-		// Stream the response
-		var fullResponse string
-		err := a.model.StreamResponse(ctx, messages, func(chunk string) error {
-			// Color tool usage in yellow
-			if strings.Contains(chunk, "[Tool:") {
-				fmt.Printf("%s%s%s", colorYellow, chunk, colorReset)
-			} else {
-				fmt.Print(chunk)
-			}
-			fullResponse += chunk
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("error getting model response: %w", err)
-		}
-
-		// Check if the response contains tool usage
-		if strings.Contains(fullResponse, "<tool>") || strings.Contains(fullResponse, "[Tool:") || strings.Contains(fullResponse, "tool_calls") {
-			//
-			// Extract tool name and input
-			lines := strings.Split(fullResponse, "\n")
-			var toolName string
-			var toolInput string
-
-			// Try to parse as XML tool format first
-			if toolStart := strings.Index(fullResponse, "<tool>"); toolStart != -1 {
-				if toolEnd := strings.Index(fullResponse, "</tool>"); toolEnd != -1 {
-					toolJSON := fullResponse[toolStart+6 : toolEnd]
-					var toolCall struct {
-						Name      string          `json:"name"`
-						Arguments json.RawMessage `json:"arguments"`
-					}
-					if err := json.Unmarshal([]byte(toolJSON), &toolCall); err == nil {
-
-						toolName = toolCall.Name
-						toolInput = string(toolCall.Arguments)
-					} else {
-
-					}
-				}
-			}
-
-			// If XML parsing failed, try Ollama's tool_calls format if the response looks like JSON
-			if toolName == "" && strings.TrimSpace(fullResponse)[0] == '{' {
-				var toolCall struct {
-					Function struct {
-						Name      string          `json:"name"`
-						Arguments json.RawMessage `json:"arguments"`
-					} `json:"function"`
-				}
-				if err := json.Unmarshal([]byte(fullResponse), &toolCall); err == nil {
-
-					toolName = toolCall.Function.Name
-					toolInput = string(toolCall.Function.Arguments)
-				} else {
-
-				}
-			}
-
-			// If both XML and Ollama parsing failed, try Claude's format
-			if toolName == "" {
-				for i, line := range lines {
-					if strings.HasPrefix(line, "[Tool:") {
-						toolName = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(line, "]"), "[Tool:"))
-						if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "Input:") {
-							toolInput = strings.TrimSpace(strings.TrimPrefix(lines[i+1], "Input:"))
-						}
-						break
-					}
-				}
-			}
-
-			if toolName != "" {
-				for _, tool := range a.tools {
-					if tool.GetName() == toolName {
-
-						// Start spinner in a goroutine
-						done := make(chan bool)
-						go func() {
-							i := 0
-							for {
-								select {
-								case <-done:
-									return
-								default:
-									fmt.Printf("\r%s%s%s", colorYellow, spinnerFrames[i], colorReset)
-									i = (i + 1) % len(spinnerFrames)
-									time.Sleep(100 * time.Millisecond)
-								}
-							}
-						}()
-
-						result, err := tool.Execute(json.RawMessage(toolInput))
-						done <- true    // Stop the spinner
-						fmt.Print("\r") // Clear the spinner line
-
-						if err != nil {
-							return fmt.Errorf("error executing tool %s: %w", toolName, err)
-						}
-
-						// Print tool result in yellow
-						fmt.Printf("%s<result>%s</result>%s\n", colorYellow, result, colorReset)
-
-						// Add tool result to messages
-						messages = append(messages, models.Message{
-							Role:    "assistant",
-							Content: fullResponse,
-						})
-						messages = append(messages, models.Message{
-							Role:    "user",
-							Content: fmt.Sprintf("<result>%s</result>", result),
-						})
-
-						// Get model's response to the tool result
-						fmt.Printf("%sAssistant: %s", colorGreen, colorReset)
-						err = a.model.StreamResponse(ctx, messages, func(chunk string) error {
-							// Color tool usage in yellow
-							if strings.Contains(chunk, "<tool>") || strings.Contains(chunk, "<result>") || strings.Contains(chunk, "[Tool:") || strings.Contains(chunk, "tool_calls") {
-								fmt.Printf("%s%s%s", colorYellow, chunk, colorReset)
-							} else {
-								fmt.Print(chunk)
-							}
-							fullResponse += chunk
-							return nil
-						})
-						if err != nil {
-							return fmt.Errorf("error getting model response to tool result: %w", err)
-						}
-						break
-					}
-				}
-			}
-		}
-
-		// Update statistics
-		a.stats.LastResponseTime = time.Since(startTime)
-		if a.showStats {
-			// Estimate tokens for streaming response
-			inputTokens := float64(len(strings.Fields(input))) * 1.3 // Rough estimate
-			outputTokens := float64(len(strings.Fields(fullResponse))) * 1.3
-			a.stats.TotalInputTokens += int64(inputTokens)
-			a.stats.TotalOutputTokens += int64(outputTokens)
-
-			fmt.Printf("\n\n%s[Stats] Response time: %v, Input tokens: %d, Output tokens: %d%s\n",
-				colorYellow,
-				a.stats.LastResponseTime.Round(time.Millisecond),
-				int64(inputTokens),
-				int64(outputTokens),
-				colorReset)
-		}
-
-		// Add assistant response to history
-		assistantMsg := models.Message{
-			Role:    "assistant",
-			Content: fullResponse,
-		}
-		messages = append(messages, assistantMsg)
-
-		// Save assistant message with the same conversation ID
-		if err := a.storage.SaveMessage(assistantMsg, a.model.GetName(), models.Usage{
-			OutputTokens: int64(len(strings.Fields(fullResponse))),
-		}, conversationID); err != nil {
-			fmt.Printf("Warning: failed to save assistant message: %v\n", err)
-		}
-
-		// Add a newline before the next user input
-		fmt.Println()
-	}
 }
 
 // PrintStats prints the agent's statistics
@@ -358,6 +356,10 @@ func (a *Agent) PrintStats() {
 	fmt.Printf("Total runtime: %v\n", totalTime.Round(time.Second))
 	fmt.Printf("Total input tokens: %d\n", a.stats.TotalInputTokens)
 	fmt.Printf("Total output tokens: %d\n", a.stats.TotalOutputTokens)
-	fmt.Printf("Average response time: %v\n", a.stats.LastResponseTime.Round(time.Millisecond))
+	var average time.Duration
+	if a.stats.Turns > 0 {
+		average = a.stats.TotalResponseTime / time.Duration(a.stats.Turns)
+	}
+	fmt.Printf("Average response time: %v\n", average.Round(time.Millisecond))
 	fmt.Printf("==================\n")
 }

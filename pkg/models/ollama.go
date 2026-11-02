@@ -1,3 +1,5 @@
+// ABOUTME: Ollama provider implementing the Model interface against a local /api/chat endpoint.
+// ABOUTME: Supports native tool calls and a <tool> JSON text fallback for other models.
 package models
 
 import (
@@ -7,14 +9,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"llm-agent/pkg/tools"
 )
 
 type OllamaModel struct {
-	config ModelConfig
-	client *http.Client
-	tools  []tools.Tool
+	config  ModelConfig
+	client  *http.Client
+	baseURL string
+	tools   []toolParam
 }
 
 type ollamaRequest struct {
@@ -64,41 +68,27 @@ type ollamaResponse struct {
 	EvalDuration    int64   `json:"eval_duration"`
 }
 
+// DefaultOllamaURL is where a locally installed Ollama listens
+const DefaultOllamaURL = "http://localhost:11434"
+
 func NewOllamaModel(config ModelConfig) (*OllamaModel, error) {
 	if config.ModelName == "" {
 		config.ModelName = "llama2" // default model
 	}
 
-	return &OllamaModel{
-		config: config,
-		client: &http.Client{},
-	}, nil
-}
-
-func (m *OllamaModel) GenerateResponse(ctx context.Context, messages []Message) (*Response, error) {
-	var fullResponse string
-	err := m.StreamResponse(ctx, messages, func(chunk string) error {
-		fullResponse += chunk
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	baseURL := strings.TrimSuffix(config.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = DefaultOllamaURL
 	}
 
-	// Estimate token usage (rough approximation)
-	inputTokens := estimateTokens(messages)
-	outputTokens := estimateTokens([]Message{{Content: fullResponse}})
-
-	return &Response{
-		Content: fullResponse,
-		Usage: Usage{
-			InputTokens:  int64(inputTokens),
-			OutputTokens: int64(outputTokens),
-		},
+	return &OllamaModel{
+		config:  config,
+		client:  newHTTPClient(),
+		baseURL: baseURL,
 	}, nil
 }
 
-func (m *OllamaModel) StreamResponse(ctx context.Context, messages []Message, onChunk func(chunk string) error) error {
+func (m *OllamaModel) StreamResponse(ctx context.Context, messages []Message, onChunk func(chunk string) error) (*Response, error) {
 	// Convert our messages to Ollama format
 	ollamaMessages := make([]message, len(messages))
 	for i, msg := range messages {
@@ -106,13 +96,130 @@ func (m *OllamaModel) StreamResponse(ctx context.Context, messages []Message, on
 			Role:    msg.Role,
 			Content: msg.Content,
 		}
+		for _, call := range msg.ToolCalls {
+			ollamaMessages[i].ToolCalls = append(ollamaMessages[i].ToolCalls, toolCall{
+				ID:       call.ID,
+				Type:     "function",
+				Function: functionCall{Name: call.Name, Arguments: call.Input},
+			})
+		}
 	}
 
+	// Prepare request
+	reqBody := ollamaRequest{
+		Model:    m.config.ModelName,
+		Messages: ollamaMessages,
+		Stream:   true,
+		Tools:    m.tools,
+		Options: map[string]interface{}{
+			"temperature": m.config.Temperature,
+			"num_predict": m.config.MaxTokens,
+		},
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Make request to Ollama
+	req, err := http.NewRequestWithContext(ctx, "POST", m.baseURL+"/api/chat", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request to Ollama: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// Include the start of the body, which explains errors such as an unknown model
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("ollama API returned status code %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	// Decode chunks as they arrive so output streams to the caller
+	decoder := json.NewDecoder(resp.Body)
+
+	out := &Response{}
+	for {
+		var ollamaResp ollamaResponse
+		if err := decoder.Decode(&ollamaResp); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+
+		// Collect every native tool call the model makes
+		for _, call := range ollamaResp.Message.ToolCalls {
+			id := call.ID
+			if id == "" {
+				id = fmt.Sprintf("call_%d", len(out.ToolCalls))
+			}
+			out.ToolCalls = append(out.ToolCalls, ToolCall{ID: id, Name: call.Function.Name, Input: call.Function.Arguments})
+		}
+
+		if ollamaResp.Message.Content != "" {
+			// Handle regular message content
+			out.Content += ollamaResp.Message.Content
+			if err := onChunk(ollamaResp.Message.Content); err != nil {
+				return nil, fmt.Errorf("error processing chunk: %w", err)
+			}
+		}
+
+		if ollamaResp.Done {
+			out.Usage = Usage{
+				InputTokens:  int64(ollamaResp.PromptEvalCount),
+				OutputTokens: int64(ollamaResp.EvalCount),
+			}
+			break
+		}
+	}
+
+	// Models that ignore native tool calling may follow the <tool> text protocol
+	// described in the system prompt instead
+	if len(out.ToolCalls) == 0 {
+		if call, ok := parseTextToolCall(out.Content); ok {
+			out.ToolCalls = append(out.ToolCalls, call)
+		}
+	}
+
+	return out, nil
+}
+
+// parseTextToolCall extracts a tool call written as JSON inside <tool></tool> tags.
+// A tag pair with invalid JSON yields a call with an empty name so the agent can
+// report the malformed call back to the model.
+func parseTextToolCall(content string) (ToolCall, bool) {
+	start := strings.Index(content, "<tool>")
+	if start == -1 {
+		return ToolCall{}, false
+	}
+	end := strings.Index(content[start:], "</tool>")
+	if end == -1 {
+		return ToolCall{}, false
+	}
+	raw := content[start+len("<tool>") : start+end]
+	var parsed struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return ToolCall{ID: "call_0", Input: json.RawMessage(raw)}, true
+	}
+	return ToolCall{ID: "call_0", Name: parsed.Name, Input: parsed.Arguments}, true
+}
+
+func (m *OllamaModel) SetTools(tools []tools.Tool) error {
 	// Convert tools to Ollama format
 	var ollamaTools []toolParam
-	if m.tools != nil {
-		ollamaTools = make([]toolParam, len(m.tools))
-		for i, tool := range m.tools {
+	if tools != nil {
+		ollamaTools = make([]toolParam, len(tools))
+		for i, tool := range tools {
 			// Parse the input schema
 			var schema map[string]interface{}
 			if err := json.Unmarshal(tool.GetInputSchema(), &schema); err != nil {
@@ -139,94 +246,7 @@ func (m *OllamaModel) StreamResponse(ctx context.Context, messages []Message, on
 		}
 	}
 
-	// Prepare request
-	reqBody := ollamaRequest{
-		Model:    m.config.ModelName,
-		Messages: ollamaMessages,
-		Stream:   true,
-		Tools:    ollamaTools,
-		Options: map[string]interface{}{
-			"temperature": m.config.Temperature,
-			"num_predict": m.config.MaxTokens,
-		},
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	//
-
-	// Make request to Ollama
-	req, err := http.NewRequestWithContext(ctx, "POST", "http://localhost:11434/api/chat", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to make request to Ollama: %w", err)
-	}
-	//
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ollama API returned status code: %d", resp.StatusCode)
-	}
-
-	// Read the raw response for debugging
-	rawBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Create a new reader with the raw body
-	reader := bytes.NewReader(rawBody)
-	decoder := json.NewDecoder(reader)
-
-	for {
-		var ollamaResp ollamaResponse
-		if err := decoder.Decode(&ollamaResp); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("failed to decode response: %w", err)
-		}
-
-		// Handle tool calls if present
-		if len(ollamaResp.Message.ToolCalls) > 0 {
-			toolCall := ollamaResp.Message.ToolCalls[0]
-			// Format the tool call in our XML-like format
-			toolCallStr := fmt.Sprintf(`<tool>
-{
-  "name": "%s",
-  "arguments": %s
-}
-</tool>`, toolCall.Function.Name, string(toolCall.Function.Arguments))
-
-			if err := onChunk(toolCallStr); err != nil {
-				return fmt.Errorf("error processing tool call: %w", err)
-			}
-		} else if ollamaResp.Message.Content != "" {
-			// Handle regular message content
-
-			if err := onChunk(ollamaResp.Message.Content); err != nil {
-				return fmt.Errorf("error processing chunk: %w", err)
-			}
-		}
-
-		if ollamaResp.Done {
-			break
-		}
-	}
-
-	return nil
-}
-
-func (m *OllamaModel) SetTools(tools []tools.Tool) error {
-	m.tools = tools
+	m.tools = ollamaTools
 	return nil
 }
 
@@ -236,15 +256,4 @@ func (m *OllamaModel) GetName() string {
 
 func (m *OllamaModel) GetMaxTokens() int {
 	return m.config.MaxTokens
-}
-
-// estimateTokens provides a rough estimate of token count
-// This is a very basic implementation - in practice, you'd want to use a proper tokenizer
-func estimateTokens(messages []Message) int {
-	total := 0
-	for _, msg := range messages {
-		// Rough estimate: 1 token ≈ 4 characters
-		total += len(msg.Content) / 4
-	}
-	return total
 }

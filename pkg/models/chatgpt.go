@@ -1,3 +1,5 @@
+// ABOUTME: OpenAI ChatGPT provider implementing the Model interface over streaming completions.
+// ABOUTME: Reassembles streamed tool call fragments into structured ToolCalls.
 package models
 
 import (
@@ -21,89 +23,103 @@ func NewChatGPTModel(config ModelConfig) (*ChatGPTModel, error) {
 		return nil, fmt.Errorf("API key is required for ChatGPT model")
 	}
 
-	client := openai.NewClient(config.APIKey)
+	clientConfig := openai.DefaultConfig(config.APIKey)
+	clientConfig.HTTPClient = newHTTPClient()
+	client := openai.NewClientWithConfig(clientConfig)
 	return &ChatGPTModel{
 		client: client,
 		config: config,
 	}, nil
 }
 
-func (m *ChatGPTModel) GenerateResponse(ctx context.Context, messages []Message) (*Response, error) {
+// toOpenAIMessages maps our messages, including tool calls and results, to the OpenAI format
+func toOpenAIMessages(messages []Message) []openai.ChatCompletionMessage {
 	openaiMessages := make([]openai.ChatCompletionMessage, len(messages))
 	for i, msg := range messages {
-		role := msg.Role
-		if role != "user" && role != "assistant" && role != "system" {
-			role = "user"
+		out := openai.ChatCompletionMessage{
+			Role:       msg.Role,
+			Content:    msg.Content,
+			ToolCallID: msg.ToolCallID,
 		}
-		openaiMessages[i] = openai.ChatCompletionMessage{
-			Role:    role,
-			Content: msg.Content,
+		for _, call := range msg.ToolCalls {
+			out.ToolCalls = append(out.ToolCalls, openai.ToolCall{
+				ID:       call.ID,
+				Type:     openai.ToolTypeFunction,
+				Function: openai.FunctionCall{Name: call.Name, Arguments: string(call.Input)},
+			})
 		}
+		openaiMessages[i] = out
 	}
-
-	resp, err := m.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model:       m.config.ModelName,
-		Messages:    openaiMessages,
-		MaxTokens:   m.config.MaxTokens,
-		Temperature: float32(m.config.Temperature),
-		Tools:       m.tools,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create chat completion: %w", err)
-	}
-
-	content := resp.Choices[0].Message.Content
-
-	return &Response{
-		Content: content,
-		Usage: Usage{
-			InputTokens:  int64(resp.Usage.PromptTokens),
-			OutputTokens: int64(resp.Usage.CompletionTokens),
-		},
-	}, nil
+	return openaiMessages
 }
 
-func (m *ChatGPTModel) StreamResponse(ctx context.Context, messages []Message, onChunk func(chunk string) error) error {
-	openaiMessages := make([]openai.ChatCompletionMessage, len(messages))
-	for i, msg := range messages {
-		role := msg.Role
-		if role != "user" && role != "assistant" && role != "system" {
-			role = "user"
-		}
-		openaiMessages[i] = openai.ChatCompletionMessage{
-			Role:    role,
-			Content: msg.Content,
-		}
-	}
-
+func (m *ChatGPTModel) StreamResponse(ctx context.Context, messages []Message, onChunk func(chunk string) error) (*Response, error) {
 	stream, err := m.client.CreateChatCompletionStream(ctx, openai.ChatCompletionRequest{
-		Model:       m.config.ModelName,
-		Messages:    openaiMessages,
-		MaxTokens:   m.config.MaxTokens,
-		Temperature: float32(m.config.Temperature),
-		Tools:       m.tools,
+		Model:         m.config.ModelName,
+		Messages:      toOpenAIMessages(messages),
+		MaxTokens:     m.config.MaxTokens,
+		Temperature:   float32(m.config.Temperature),
+		Tools:         m.tools,
+		StreamOptions: &openai.StreamOptions{IncludeUsage: true},
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create chat completion stream: %w", err)
+		return nil, fmt.Errorf("failed to create chat completion stream: %w", err)
 	}
 	defer stream.Close()
 
+	resp := &Response{}
+	// Tool call fragments arrive spread across chunks, keyed by index
+	var calls []*ToolCall
+	var args []string
 	for {
 		response, err := stream.Recv()
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
-			return fmt.Errorf("error receiving stream: %w", err)
+			return nil, fmt.Errorf("error receiving stream: %w", err)
 		}
-		chunk := response.Choices[0].Delta.Content
+		if response.Usage != nil {
+			resp.Usage = Usage{
+				InputTokens:  int64(response.Usage.PromptTokens),
+				OutputTokens: int64(response.Usage.CompletionTokens),
+			}
+		}
+		// The usage chunk and some filtered chunks carry no choices
+		if len(response.Choices) == 0 {
+			continue
+		}
+		delta := response.Choices[0].Delta
+		for _, tc := range delta.ToolCalls {
+			idx := len(calls)
+			if tc.Index != nil {
+				idx = *tc.Index
+			}
+			for len(calls) <= idx {
+				calls = append(calls, &ToolCall{})
+				args = append(args, "")
+			}
+			if tc.ID != "" {
+				calls[idx].ID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				calls[idx].Name = tc.Function.Name
+			}
+			args[idx] += tc.Function.Arguments
+		}
+		chunk := delta.Content
 		if chunk != "" {
+			resp.Content += chunk
 			if err := onChunk(chunk); err != nil {
-				return fmt.Errorf("error processing chunk: %w", err)
+				return nil, fmt.Errorf("error processing chunk: %w", err)
 			}
 		}
 	}
-	return nil
+	for i, call := range calls {
+		call.Input = json.RawMessage(args[i])
+		resp.ToolCalls = append(resp.ToolCalls, *call)
+	}
+	return resp, nil
 }
 
 func (m *ChatGPTModel) GetName() string {

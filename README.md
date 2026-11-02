@@ -87,6 +87,7 @@ go run ./cmd/agent
 - `-stats`: Show token usage statistics after each response and when exiting
 - `-model`: Select the model to use ("claude" or "ollama")
 - `-ollama-model`: Select the Ollama model to use (e.g., "llama2", "mistral")
+- `-ollama-url`: Base URL of the Ollama server (default `http://localhost:11434`)
 
 Examples:
 
@@ -112,34 +113,14 @@ Examples:
 
 ## Chat history output structure
 
+History is written as [JSON Lines](https://jsonlines.org/) (default `chat_history.jsonl`), one message per line, appended as the conversation happens. Assistant messages that call tools include `tool_calls`, and the matching `tool` messages carry `tool_call_id`.
+
 ```json
-[
-  {
-    "id": "99755c80-6d0e-4c40-92a4-1ac48b1fa4eb",
-    "conversation_id": "a468a39b-3601-49be-b44d-5cc1bdadda9b",
-    "role": "user",
-    "content": "What is the cellestial object Sedna?",
-    "timestamp": "2025-05-16T06:19:06.712554-05:00",
-    "model": "ollama-llama3.2",
-    "usage": {
-      "input_tokens": 6,
-      "output_tokens": 0
-    }
-  },
-  {
-    "id": "649b84e8-1c50-45b2-91e6-8f25b9600d04",
-    "conversation_id": "a468a39b-3601-49be-b44d-5cc1bdadda9b",
-    "role": "assistant",
-    "content": "Sedna is a small, icy celestial body located in the outer reaches of the Solar System. It was discovered on November 14, 2003, by a team of astronomers led by Mike Brown at Caltech.\n\nSedna is estimated to be about 1,000 kilometers (620 miles) in diameter and has an extremely elliptical orbit that takes it from the Oort Cloud, a region of icy bodies surrounding the Sun, to as close as 28 astronomical units (AU) from the Sun. One astronomical unit is the average distance between the Earth and the Sun.\n\nSedna's orbital period is estimated to be around 11,400 years, which means it takes the object nearly 12,000 years to complete one orbit around the Sun. This makes Sedna one of the most distant known objects in the Solar System.\n\nDespite its small size, Sedna is thought to be a significant discovery because it may be a representative of a new class of objects that were previously unknown. It's also believed to be a possible source of comets and other short-period icy bodies in the outer reaches of the Solar System.\n\nSedna was named after the Inuit goddess of sea ice and mist, Sedna, who is said to live in the outer reaches of the world. The discovery of Sedna has helped scientists better understand the outer limits of the Solar System and the origins of comets and other icy bodies that originate from the Oort Cloud.",
-    "timestamp": "2025-05-16T06:19:10.204211-05:00",
-    "model": "ollama-llama3.2",
-    "usage": {
-      "input_tokens": 0,
-      "output_tokens": 238
-    }
-  }
-]
+{"id":"99755c80-6d0e-4c40-92a4-1ac48b1fa4eb","conversation_id":"a468a39b-3601-49be-b44d-5cc1bdadda9b","role":"user","content":"What is in main.go?","timestamp":"2025-05-16T06:19:06.712554-05:00","model":"ollama-llama3.2","usage":{"input_tokens":6,"output_tokens":0}}
+{"id":"649b84e8-1c50-45b2-91e6-8f25b9600d04","conversation_id":"a468a39b-3601-49be-b44d-5cc1bdadda9b","role":"assistant","content":"","timestamp":"2025-05-16T06:19:07.204211-05:00","model":"ollama-llama3.2","tool_calls":[{"id":"call_0","name":"read_file","input":{"path":"main.go"}}],"usage":{"input_tokens":0,"output_tokens":12}}
 ```
+
+Load into Datasette with `sqlite-utils insert chat.db messages chat_history.jsonl --nl`. Files from older versions used a single JSON array; convert them with `jq -c '.[]' chat_history.json > chat_history.jsonl`.
 
 ## Project Structure
 

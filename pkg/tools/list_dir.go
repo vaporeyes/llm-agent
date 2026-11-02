@@ -1,10 +1,11 @@
+// ABOUTME: list_dir tool: lists one workspace directory with entry types and sizes.
+// ABOUTME: Paths are confined to the workspace root.
 package tools
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -50,9 +51,9 @@ func (t *ListDirTool) Execute(input json.RawMessage) (string, error) {
 	}
 
 	// Validate and sanitize the path
-	absPath := filepath.Join(t.workspaceRoot, params.Path)
-	if !strings.HasPrefix(absPath, t.workspaceRoot) {
-		return "", fmt.Errorf("path must be within workspace root")
+	absPath, err := resolveInWorkspace(t.workspaceRoot, params.Path)
+	if err != nil {
+		return "", err
 	}
 
 	// Check if directory exists
@@ -89,9 +90,9 @@ func (t *ListDirTool) Execute(input json.RawMessage) (string, error) {
 		}
 
 		// Add a prefix to indicate type
-		prefix := "📄" // file
+		prefix := "[file]"
 		if entry.IsDir() {
-			prefix = "📁" // directory
+			prefix = "[dir] "
 		}
 
 		output.WriteString(fmt.Sprintf("%s %s\t%s\n", prefix, entry.Name(), size))

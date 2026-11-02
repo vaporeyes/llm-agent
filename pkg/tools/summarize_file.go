@@ -1,8 +1,13 @@
+// ABOUTME: summarize_file tool: gives a short overview of a workspace file.
+// ABOUTME: Go files are parsed exactly; other types use heuristics on the first 1000 bytes.
 package tools
 
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -28,7 +33,7 @@ func (t *SummarizeFileTool) GetName() string {
 }
 
 func (t *SummarizeFileTool) GetDescription() string {
-	return "Summarizes the contents of a file, providing a brief overview of its structure and purpose. Use this when you want to understand what a file does without reading its entire contents."
+	return "Gives a quick overview of a file: size, type, declaration counts, and its first lines. Go files are parsed exactly; other types get rough keyword counts from the first 1000 bytes. Use this to orient yourself before deciding whether to read the whole file."
 }
 
 func (t *SummarizeFileTool) GetInputSchema() json.RawMessage {
@@ -51,9 +56,9 @@ func (t *SummarizeFileTool) Execute(input json.RawMessage) (string, error) {
 	}
 
 	// Validate and sanitize the path
-	absPath, err := filepath.Abs(filepath.Join(t.workspaceRoot, params.Path))
+	absPath, err := resolveInWorkspace(t.workspaceRoot, params.Path)
 	if err != nil {
-		return "", fmt.Errorf("error getting filepath")
+		return "", err
 	}
 
 	// Check if file exists
@@ -72,6 +77,17 @@ func (t *SummarizeFileTool) Execute(input json.RawMessage) (string, error) {
 	}
 	defer file.Close()
 
+	fileType := filepath.Ext(absPath)
+
+	// Go files are parsed in full when small enough; other types use heuristics on the first 1000 bytes
+	if fileType == ".go" && fileInfo.Size() <= maxReadBytes {
+		src, err := io.ReadAll(file)
+		if err != nil {
+			return "", fmt.Errorf("failed to read file: %w", err)
+		}
+		return fmt.Sprintf("File: %s\nSize: %d bytes\nType: %s\n\n%s", params.Path, fileInfo.Size(), fileType, analyzeGoFile(src)), nil
+	}
+
 	// Read first 1000 bytes for analysis
 	buffer := make([]byte, 1000)
 	n, err := file.Read(buffer)
@@ -81,13 +97,10 @@ func (t *SummarizeFileTool) Execute(input json.RawMessage) (string, error) {
 
 	// Analyze file content
 	content := string(buffer[:n])
-	fileType := filepath.Ext(absPath)
 
 	// Generate summary based on file type
 	var summary string
 	switch fileType {
-	case ".go":
-		summary = analyzeGoFile(content)
 	case ".py":
 		summary = analyzePythonFile(content)
 	case ".js", ".ts", ".jsx", ".tsx":
@@ -109,14 +122,28 @@ func (t *SummarizeFileTool) Execute(input json.RawMessage) (string, error) {
 	return summary, nil
 }
 
-func analyzeGoFile(content string) string {
-	// Count imports, functions, and structs
-	imports := strings.Count(content, "import")
-	functions := strings.Count(content, "func")
-	structs := strings.Count(content, "type") - strings.Count(content, "type interface")
+// analyzeGoFile parses Go source and counts real declarations rather than substrings
+func analyzeGoFile(src []byte) string {
+	f, err := parser.ParseFile(token.NewFileSet(), "", src, parser.SkipObjectResolution)
+	if err != nil {
+		return fmt.Sprintf("Go file analysis: could not parse: %v\n\nFirst few lines:\n%s", err, getFirstLines(string(src), 5))
+	}
 
-	return fmt.Sprintf("Go file analysis:\n- %d imports\n- %d functions\n- %d structs/interfaces\n\nFirst few lines:\n%s",
-		imports, functions, structs, getFirstLines(content, 5))
+	// Count imports, functions, and types
+	functions, types := 0, 0
+	for _, decl := range f.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			functions++
+		case *ast.GenDecl:
+			if d.Tok == token.TYPE {
+				types += len(d.Specs)
+			}
+		}
+	}
+
+	return fmt.Sprintf("Go file analysis:\n- package %s\n- %d imports\n- %d functions\n- %d types\n\nFirst few lines:\n%s",
+		f.Name.Name, len(f.Imports), functions, types, getFirstLines(string(src), 5))
 }
 
 func analyzePythonFile(content string) string {

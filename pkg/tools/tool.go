@@ -1,3 +1,5 @@
+// ABOUTME: Tool interface implemented by everything the model can call.
+// ABOUTME: BaseTool adapts a name, description, schema, and function into a Tool.
 package tools
 
 import (

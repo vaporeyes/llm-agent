@@ -1,3 +1,5 @@
+// ABOUTME: Anthropic Claude provider implementing the Model interface via the Messages API.
+// ABOUTME: Maps chat roles, tool_use, and tool_result blocks to and from provider-neutral types.
 package models
 
 import (
@@ -7,6 +9,7 @@ import (
 	"llm-agent/pkg/tools"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
 type ClaudeModel struct {
@@ -20,7 +23,7 @@ func NewClaudeModel(config ModelConfig) (*ClaudeModel, error) {
 		return nil, fmt.Errorf("API key is required for Claude model")
 	}
 
-	client := anthropic.NewClient()
+	client := anthropic.NewClient(option.WithAPIKey(config.APIKey), option.WithHTTPClient(newHTTPClient()))
 	return &ClaudeModel{
 		client: &client,
 		config: config,
@@ -49,86 +52,97 @@ func (m *ClaudeModel) SetTools(tools []tools.Tool) error {
 			inputSchema.ExtraFields["required"] = required
 		}
 
-		claudeTools[i] = anthropic.ToolUnionParamOfTool(
-			inputSchema,
-			tool.GetName(),
-		)
+		claudeTools[i] = anthropic.ToolUnionParam{OfTool: &anthropic.ToolParam{
+			Name:        tool.GetName(),
+			Description: anthropic.String(tool.GetDescription()),
+			InputSchema: inputSchema,
+		}}
 	}
 
 	m.tools = claudeTools
 	return nil
 }
 
-func (m *ClaudeModel) GenerateResponse(ctx context.Context, messages []Message) (*Response, error) {
-	anthropicMessages := make([]anthropic.MessageParam, len(messages))
-	for i, msg := range messages {
-		anthropicMessages[i] = anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content))
+// toAnthropicMessages maps our messages onto Claude's roles. System messages
+// become the system prompt, and consecutive tool results are merged into a
+// single user turn as the API requires.
+func toAnthropicMessages(messages []Message) ([]anthropic.TextBlockParam, []anthropic.MessageParam) {
+	var system []anthropic.TextBlockParam
+	var out []anthropic.MessageParam
+	for _, msg := range messages {
+		switch msg.Role {
+		case "system":
+			system = append(system, anthropic.TextBlockParam{Text: msg.Content})
+		case "assistant":
+			var blocks []anthropic.ContentBlockParamUnion
+			if msg.Content != "" {
+				blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+			}
+			for _, call := range msg.ToolCalls {
+				blocks = append(blocks, anthropic.ContentBlockParamOfRequestToolUseBlock(call.ID, call.Input, call.Name))
+			}
+			if len(blocks) > 0 {
+				out = append(out, anthropic.NewAssistantMessage(blocks...))
+			}
+		case "tool":
+			block := anthropic.NewToolResultBlock(msg.ToolCallID, msg.Content, false)
+			if n := len(out); n > 0 && out[n-1].Role == anthropic.MessageParamRoleUser {
+				out[n-1].Content = append(out[n-1].Content, block)
+			} else {
+				out = append(out, anthropic.NewUserMessage(block))
+			}
+		default:
+			out = append(out, anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content)))
+		}
 	}
+	return system, out
+}
 
-	message, err := m.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.ModelClaude3_7SonnetLatest,
-		MaxTokens: int64(m.config.MaxTokens),
-		Messages:  anthropicMessages,
-		Tools:     m.tools,
+func (m *ClaudeModel) StreamResponse(ctx context.Context, messages []Message, onChunk func(chunk string) error) (*Response, error) {
+	system, anthropicMessages := toAnthropicMessages(messages)
+
+	stream := m.client.Messages.NewStreaming(ctx, anthropic.MessageNewParams{
+		Model:       anthropic.Model(m.config.ModelName),
+		MaxTokens:   int64(m.config.MaxTokens),
+		Temperature: anthropic.Float(m.config.Temperature),
+		System:      system,
+		Messages:    anthropicMessages,
+		Tools:       m.tools,
 	})
-	if err != nil {
+	defer stream.Close()
+
+	var message anthropic.Message
+	for stream.Next() {
+		event := stream.Current()
+		if err := message.Accumulate(event); err != nil {
+			return nil, fmt.Errorf("failed to accumulate stream: %w", err)
+		}
+		if event.Type == "content_block_delta" && event.Delta.Type == "text_delta" {
+			if err := onChunk(event.Delta.Text); err != nil {
+				return nil, fmt.Errorf("error processing chunk: %w", err)
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
 		return nil, err
 	}
 
 	// Extract content from the response
-	var content string
-	for _, block := range message.Content {
-		switch block.Type {
-		case "text":
-			textBlock := block.AsResponseTextBlock()
-			content += textBlock.Text
-		case "tool_use":
-			toolBlock := block.AsResponseToolUseBlock()
-			// Format tool usage in a way that's easy to read
-			content += fmt.Sprintf("\n[Tool: %s]\nInput: %s\n", toolBlock.Name, string(toolBlock.Input))
-		}
-	}
-
-	return &Response{
-		Content: content,
+	resp := &Response{
 		Usage: Usage{
 			InputTokens:  message.Usage.InputTokens,
 			OutputTokens: message.Usage.OutputTokens,
 		},
-	}, nil
-}
-
-func (m *ClaudeModel) StreamResponse(ctx context.Context, messages []Message, onChunk func(chunk string) error) error {
-	anthropicMessages := make([]anthropic.MessageParam, len(messages))
-	for i, msg := range messages {
-		anthropicMessages[i] = anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content))
 	}
-
-	message, err := m.client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.ModelClaude3_7SonnetLatest,
-		MaxTokens: int64(m.config.MaxTokens),
-		Messages:  anthropicMessages,
-		Tools:     m.tools,
-	})
-	if err != nil {
-		return err
-	}
-
-	// Extract content from the response
-	var content string
 	for _, block := range message.Content {
 		switch block.Type {
 		case "text":
-			textBlock := block.AsResponseTextBlock()
-			content += textBlock.Text
+			resp.Content += block.Text
 		case "tool_use":
-			toolBlock := block.AsResponseToolUseBlock()
-			// Format tool usage in a way that's easy to read
-			content += fmt.Sprintf("\n[Tool: %s]\nInput: %s\n", toolBlock.Name, string(toolBlock.Input))
+			resp.ToolCalls = append(resp.ToolCalls, ToolCall{ID: block.ID, Name: block.Name, Input: block.Input})
 		}
 	}
-
-	return onChunk(content)
+	return resp, nil
 }
 
 func (m *ClaudeModel) GetName() string {

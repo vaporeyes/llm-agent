@@ -1,3 +1,5 @@
+// ABOUTME: search_file tool: returns lines in a workspace file matching a string or regex.
+// ABOUTME: Paths are confined to the workspace root.
 package tools
 
 import (
@@ -14,13 +16,13 @@ type SearchFileTool struct {
 	BaseTool
 }
 
-func NewSearchFileTool() *SearchFileTool {
+func NewSearchFileTool(workspaceRoot string) *SearchFileTool {
 	return &SearchFileTool{
 		BaseTool: BaseTool{
 			Name:        "search_file",
 			Description: "Search for a string or regex pattern within a file and return matching lines. Use regex:true for regex pattern matching.",
 			InputSchema: generateSchema[SearchFileInput](),
-			ExecuteFn:   searchFile,
+			ExecuteFn:   func(input json.RawMessage) (string, error) { return searchFile(workspaceRoot, input) },
 		},
 	}
 }
@@ -31,7 +33,7 @@ type SearchFileInput struct {
 	Regex   bool   `json:"regex" jsonschema_description:"Whether to treat the pattern as a regex (true) or plain string (false)"`
 }
 
-func searchFile(input json.RawMessage) (string, error) {
+func searchFile(workspaceRoot string, input json.RawMessage) (string, error) {
 	var searchInput SearchFileInput
 	if err := json.Unmarshal(input, &searchInput); err != nil {
 		return "", err
@@ -43,7 +45,11 @@ func searchFile(input json.RawMessage) (string, error) {
 	}
 
 	// Open the file
-	file, err := os.Open(searchInput.Path)
+	path, err := resolveInWorkspace(workspaceRoot, searchInput.Path)
+	if err != nil {
+		return "", err
+	}
+	file, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("failed to open file: %w", err)
 	}
@@ -66,6 +72,8 @@ func searchFile(input json.RawMessage) (string, error) {
 	// Search through the file
 	var matches []string
 	scanner := bufio.NewScanner(file)
+	// Allow long lines such as minified files, up to the read limit
+	scanner.Buffer(make([]byte, 0, 64*1024), maxReadBytes)
 	lineNum := 1
 	for scanner.Scan() {
 		line := scanner.Text()
