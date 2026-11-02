@@ -179,11 +179,19 @@ func editFile(input json.RawMessage) (string, error) {
 	}
 
 	oldContent := string(content)
-	newContent := strings.Replace(oldContent, editFileInput.OldStr, editFileInput.NewStr, -1)
 
-	if oldContent == newContent && editFileInput.OldStr != "" {
-		return "", fmt.Errorf("old_str not found in file")
+	// The description promises exactly one match, so refuse ambiguous or empty patterns
+	if editFileInput.OldStr == "" {
+		return "", fmt.Errorf("old_str is required when editing an existing file")
 	}
+	switch n := strings.Count(oldContent, editFileInput.OldStr); n {
+	case 0:
+		return "", fmt.Errorf("old_str not found in file")
+	case 1:
+	default:
+		return "", fmt.Errorf("old_str matches %d times; include more surrounding text so it matches exactly once", n)
+	}
+	newContent := strings.Replace(oldContent, editFileInput.OldStr, editFileInput.NewStr, 1)
 
 	err = os.WriteFile(editFileInput.Path, []byte(newContent), 0644)
 	if err != nil {

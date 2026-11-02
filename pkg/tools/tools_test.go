@@ -103,3 +103,31 @@ func TestSearchFileHandlesLongLines(t *testing.T) {
 		t.Fatalf("out = %.80q", out)
 	}
 }
+
+func TestEditFileRequiresExactlyOneMatch(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "f.txt")
+	writeFile(t, root, "f.txt", "a b a")
+	edit := NewEditFileTool()
+
+	for _, tc := range []struct{ old, wantErr string }{
+		{"a", "matches 2 times"},
+		{"zzz", "not found"},
+		{"", "old_str is required"},
+	} {
+		_, err := edit.Execute(mustInput(t, map[string]string{"path": path, "old_str": tc.old, "new_str": "X"}))
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("old_str %q: err = %v, want %q", tc.old, err, tc.wantErr)
+		}
+	}
+	if data, _ := os.ReadFile(path); string(data) != "a b a" {
+		t.Fatalf("file changed after rejected edits: %q", data)
+	}
+
+	if _, err := edit.Execute(mustInput(t, map[string]string{"path": path, "old_str": "a b", "new_str": "c"})); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "c a" {
+		t.Fatalf("content = %q", data)
+	}
+}
