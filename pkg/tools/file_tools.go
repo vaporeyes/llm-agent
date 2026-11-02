@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -37,11 +38,31 @@ func readFile(input json.RawMessage) (string, error) {
 		return "", err
 	}
 	//
-	content, err := os.ReadFile(readFileInput.Path)
+	return readLimited(readFileInput.Path)
+}
+
+// Limits that keep a single tool result from exhausting memory or the model's context
+const (
+	maxReadBytes   = 256 * 1024
+	maxListEntries = 1000
+)
+
+// readLimited reads at most maxReadBytes from path and notes when the file was cut short
+func readLimited(path string) (string, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	return string(content), nil
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxReadBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxReadBytes {
+		return string(data[:maxReadBytes]) + fmt.Sprintf("\n[truncated: showing the first %d bytes; use search_file to find specific content]", maxReadBytes), nil
+	}
+	return string(data), nil
 }
 
 // ListFilesTool implements the directory listing tool
@@ -84,6 +105,11 @@ func listFiles(input json.RawMessage) (string, error) {
 		relPath, err := filepath.Rel(dir, path)
 		if err != nil {
 			return err
+		}
+
+		if len(files) >= maxListEntries {
+			files = append(files, fmt.Sprintf("[truncated after %d entries]", maxListEntries))
+			return filepath.SkipAll
 		}
 
 		if relPath != "." {

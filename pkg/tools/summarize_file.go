@@ -77,8 +77,8 @@ func (t *SummarizeFileTool) Execute(input json.RawMessage) (string, error) {
 
 	fileType := filepath.Ext(absPath)
 
-	// Go files are parsed in full; other types use heuristics on the first 1000 bytes
-	if fileType == ".go" {
+	// Go files are parsed in full when small enough; other types use heuristics on the first 1000 bytes
+	if fileType == ".go" && fileInfo.Size() <= maxReadBytes {
 		src, err := io.ReadAll(file)
 		if err != nil {
 			return "", fmt.Errorf("failed to read file: %w", err)

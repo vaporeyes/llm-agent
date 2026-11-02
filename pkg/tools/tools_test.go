@@ -4,6 +4,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,5 +59,35 @@ func (A) method() {}
 		if !strings.Contains(out, want) {
 			t.Errorf("summary missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestReadFileTruncatesLargeFiles(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "big.txt", strings.Repeat("a", maxReadBytes+10))
+	out, err := NewReadFileTool().Execute(mustInput(t, map[string]string{"path": filepath.Join(root, "big.txt")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, strings.Repeat("a", maxReadBytes)+"\n[truncated") {
+		t.Fatalf("output not truncated at limit, len=%d", len(out))
+	}
+}
+
+func TestListFilesStopsAtEntryLimit(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < maxListEntries+50; i++ {
+		writeFile(t, root, fmt.Sprintf("f%04d", i), "")
+	}
+	out, err := NewListFilesTool().Execute(mustInput(t, map[string]string{"path": root}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []string
+	if err := json.Unmarshal([]byte(out), &files); err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != maxListEntries+1 || !strings.Contains(files[maxListEntries], "truncated") {
+		t.Fatalf("got %d entries, last %q", len(files), files[len(files)-1])
 	}
 }

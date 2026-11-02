@@ -77,6 +77,9 @@ func findFile(input json.RawMessage) (string, error) {
 
 		if matched {
 			matches = append(matches, relPath)
+			if len(matches) >= maxListEntries {
+				return filepath.SkipAll
+			}
 		}
 		return nil
 	})
@@ -94,5 +97,8 @@ func findFile(input json.RawMessage) (string, error) {
 		len(matches),
 		findInput.Pattern,
 		strings.Join(matches, "\n"))
+	if len(matches) >= maxListEntries {
+		result += fmt.Sprintf("\n[stopped after %d matches]", maxListEntries)
+	}
 	return result, nil
 }
